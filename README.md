@@ -53,6 +53,10 @@ src/
   index.css        # Design system and layout styles
 ```
 
+## Branches
+
+The repository's default branch is `main`. All of the source files described above live on `main`, so you do not need to check out any auxiliary branches to get the latest SimpleWriter build.
+
 ## Documentation
 
 Design and architecture notes live in [`docs/blueprint.md`](docs/blueprint.md).
