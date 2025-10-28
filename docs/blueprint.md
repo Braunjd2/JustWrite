@@ -1,5 +1,7 @@
 # SimpleWriter v2 – Technical Blueprint
 
+> **Implementation note:** The current repository includes a lightweight vanilla JavaScript prototype that delivers the outline, scene workspace, and Codex experience without third-party packages so it can run fully offline in constrained environments. The architectural goals captured below remain the longer-term direction for a richer React + IndexedDB client once external dependencies become feasible.
+
 ## 1. Overview
 SimpleWriter v2 is a local-first fiction drafting tool that organises manuscripts into Acts, Chapters, Scenes, and Beats while maintaining an automatically generated Codex of proper-noun entities. The application keeps all state in the browser using IndexedDB, runs entirely offline, and integrates pluggable AI services for optional assistance with beat generation, scene drafting, and Codex updates. Every AI feature must be explicitly invoked by the user and respects the manuscript text as the source of truth.
 
