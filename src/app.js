@@ -742,10 +742,10 @@ function normalizeState(value) {
           : null
       }
     : null;
-  const activeMainView =
-    uiValue.activeMainView === 'codex' || uiValue.activeMainView === 'workspace'
-      ? uiValue.activeMainView
-      : base.ui.activeMainView;
+  const allowedViews = ['workspace', 'codex', 'manuscript'];
+  const activeMainView = allowedViews.includes(uiValue.activeMainView)
+    ? uiValue.activeMainView
+    : base.ui.activeMainView;
   const sidebarView = uiValue.sidebarView === 'codex' ? 'codex' : base.ui.sidebarView;
   const validActIds = new Set(actsNormalized.map((act) => act.id));
   const validChapterIds = new Set(Object.keys(chaptersNormalized));
@@ -1063,7 +1063,7 @@ function ensureSelections() {
     state.codex.selectedId = firstEntry ? firstEntry.id : null;
   }
 
-  if (state.ui.activeMainView !== 'workspace' && state.ui.activeMainView !== 'codex') {
+  if (!['workspace', 'codex', 'manuscript'].includes(state.ui.activeMainView)) {
     state.ui.activeMainView = 'workspace';
   }
 
@@ -1344,7 +1344,7 @@ const actions = {
     }, { skipRender: true, skipHistory: true });
   },
   setActiveMainView(view) {
-    if (view !== 'workspace' && view !== 'codex') {
+    if (view !== 'workspace' && view !== 'codex' && view !== 'manuscript') {
       return;
     }
     updateState((draft) => {
@@ -2141,6 +2141,28 @@ const actions = {
       refreshCodexDerivedData(draft);
     }, { skipHistory: true });
   },
+  exportManuscript() {
+    if (!state) {
+      window.alert('No manuscript data available.');
+      return;
+    }
+    const text = buildFullManuscriptText(state);
+    if (!text || text.trim().length === 0) {
+      window.alert('No manuscript content to export yet.');
+      return;
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadFile(`manuscript-${timestamp}.txt`, text, 'text/plain;charset=utf-8');
+  },
+  exportDatabase() {
+    if (!state) {
+      window.alert('No database data available.');
+      return;
+    }
+    const snapshot = JSON.stringify(state, null, 2);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadFile(`codex-database-${timestamp}.json`, snapshot, 'application/json');
+  },
   updateCodexBackgroundField(entryId, field, value) {
     if (!entryId || !CHARACTER_BACKGROUND_FIELDS.includes(field)) {
       return;
@@ -2500,6 +2522,52 @@ function createElement(tag, className, textContent) {
     element.textContent = textContent;
   }
   return element;
+}
+
+function downloadFile(filename, data, mimeType = 'text/plain') {
+  try {
+    const blob = new Blob([data], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    globalThis.setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (error) {
+    console.warn('Failed to download file', error);
+    window.alert('Unable to trigger download. Check browser permissions.');
+  }
+}
+
+function buildFullManuscriptText(appState) {
+  if (!appState) {
+    return '';
+  }
+  const lines = [];
+  const acts = [...appState.acts].sort((a, b) => (a.order || 0) - (b.order || 0));
+  acts.forEach((act) => {
+    lines.push(`# Act ${act.order || ''}${act.title ? `: ${act.title}` : ''}`.trim());
+    const chapters = (act.chapterIds || [])
+      .map((chapterId) => appState.chapters[chapterId])
+      .filter(Boolean)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    chapters.forEach((chapter) => {
+      lines.push(`\n## Chapter ${chapter.order || ''}${chapter.title ? `: ${chapter.title}` : ''}`.trim());
+      const scenes = (chapter.sceneIds || [])
+        .map((sceneId) => appState.scenes[sceneId])
+        .filter(Boolean)
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
+      scenes.forEach((scene) => {
+        lines.push(`\n### Scene ${scene.order || ''}${scene.title ? `: ${scene.title}` : ''}`.trim());
+        lines.push(scene.text || '(Scene is empty)');
+      });
+    });
+    lines.push('\n');
+  });
+  return lines.join('\n').trim();
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -2865,12 +2933,20 @@ function renderHeaderActions() {
   const layout = createElement('div', 'header-actions-layout');
 
   const tabs = createElement('div', 'header-actions-tabs');
-  const manuscriptTab = createElement(
+  const workspaceTab = createElement(
     'button',
     `header-tab${state.ui.activeMainView === 'workspace' ? ' is-active' : ''}`,
+    'Workspace'
+  );
+  workspaceTab.addEventListener('click', () => actions.setActiveMainView('workspace'));
+  tabs.appendChild(workspaceTab);
+
+  const manuscriptTab = createElement(
+    'button',
+    `header-tab${state.ui.activeMainView === 'manuscript' ? ' is-active' : ''}`,
     'Manuscript'
   );
-  manuscriptTab.addEventListener('click', () => actions.setActiveMainView('workspace'));
+  manuscriptTab.addEventListener('click', () => actions.setActiveMainView('manuscript'));
   tabs.appendChild(manuscriptTab);
 
   const codexTab = createElement('button', `header-tab${state.ui.activeMainView === 'codex' ? ' is-active' : ''}`, 'Codex');
@@ -2887,7 +2963,7 @@ function renderHeaderActions() {
   const hasCodexKey = hasApiKeyFor(codexProviderId);
 
   const scanButton = createElement('button', 'app-header-button', isScanning ? 'Scanning…' : 'Scan scene');
-  if (!selectedScene || isScanning || !hasCodexKey) {
+  if (state.ui.activeMainView !== 'workspace' || !selectedScene || isScanning || !hasCodexKey) {
     scanButton.disabled = true;
   } else {
     scanButton.addEventListener('click', () => actions.startSceneScan(selectedScene.id));
@@ -2896,6 +2972,14 @@ function renderHeaderActions() {
     scanButton.title = 'Add an API key for the Codex provider in Settings to enable scene scanning.';
   }
   actionGroup.appendChild(scanButton);
+
+  const exportManuscriptButton = createElement('button', 'app-header-button', 'Export manuscript');
+  exportManuscriptButton.addEventListener('click', () => actions.exportManuscript());
+  actionGroup.appendChild(exportManuscriptButton);
+
+  const exportDbButton = createElement('button', 'app-header-button', 'Export data');
+  exportDbButton.addEventListener('click', () => actions.exportDatabase());
+  actionGroup.appendChild(exportDbButton);
 
   const settingsLabel = state.ui.showSettings ? 'Close settings' : 'Settings';
   const settingsButton = createElement(
@@ -3460,6 +3544,8 @@ function renderMainView() {
 
   if (state.ui.activeMainView === 'codex') {
     renderCodexView();
+  } else if (state.ui.activeMainView === 'manuscript') {
+    renderManuscriptView();
   } else {
     renderWorkspace();
   }
@@ -3688,6 +3774,95 @@ function renderWorkspace() {
     restoreEditorFocusIfNeeded(editorTextarea, selectedScene.id);
     refreshSceneIndicators();
   }
+}
+
+function renderManuscriptView() {
+  const root = mainRoot;
+  if (!root) {
+    return;
+  }
+  root.innerHTML = '';
+
+  if (!state) {
+    root.appendChild(createElement('div', 'panel-loading', 'Loading manuscript…'));
+    return;
+  }
+
+  const orderedActs = [...state.acts].sort((a, b) => (a.order || 0) - (b.order || 0));
+  const manuscript = createElement('div', 'manuscript-view');
+
+  if (orderedActs.length === 0) {
+    manuscript.appendChild(createElement('p', 'manuscript-empty', 'No scenes yet. Add scenes to build your manuscript.'));
+    root.appendChild(manuscript);
+    return;
+  }
+
+  orderedActs.forEach((act) => {
+    const actSection = createElement('section', 'manuscript-act');
+    actSection.appendChild(
+      createElement('h2', 'manuscript-act-title', act.title && act.title.trim().length > 0 ? act.title : `Act ${act.order}`)
+    );
+
+    const chapters = (act.chapterIds || [])
+      .map((chapterId) => state.chapters[chapterId])
+      .filter(Boolean)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+
+    chapters.forEach((chapter) => {
+      const chapterBlock = createElement('section', 'manuscript-chapter');
+      chapterBlock.appendChild(
+        createElement(
+          'h3',
+          'manuscript-chapter-title',
+          chapter.title && chapter.title.trim().length > 0 ? chapter.title : `Chapter ${chapter.order}`
+        )
+      );
+
+      const scenes = (chapter.sceneIds || [])
+        .map((sceneId) => state.scenes[sceneId])
+        .filter(Boolean)
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
+
+      scenes.forEach((scene) => {
+        const sceneBlock = createElement('article', 'manuscript-scene');
+        const sceneHeading = createElement(
+          'h4',
+          'manuscript-scene-title',
+          scene.title && scene.title.trim().length > 0 ? scene.title : `Scene ${scene.order}`
+        );
+        sceneBlock.appendChild(sceneHeading);
+
+        const meta = createElement(
+          'p',
+          'manuscript-scene-meta',
+          `${scene.wordCount || 0} ${scene.wordCount === 1 ? 'word' : 'words'} · ${scene.draftStatus || 'unknown'}`
+        );
+        sceneBlock.appendChild(meta);
+
+        const textContent = scene.text && scene.text.trim().length > 0 ? scene.text : '(Scene is empty)';
+        const textNode = document.createElement('pre');
+        textNode.className = 'manuscript-scene-text';
+        textNode.textContent = textContent;
+        sceneBlock.appendChild(textNode);
+
+        chapterBlock.appendChild(sceneBlock);
+      });
+
+      if (scenes.length === 0) {
+        chapterBlock.appendChild(createElement('p', 'manuscript-empty', 'No scenes in this chapter yet.'));
+      }
+
+      actSection.appendChild(chapterBlock);
+    });
+
+    if (chapters.length === 0) {
+      actSection.appendChild(createElement('p', 'manuscript-empty', 'No chapters in this act yet.'));
+    }
+
+    manuscript.appendChild(actSection);
+  });
+
+  root.appendChild(manuscript);
 }
 
 function createQuickActionButton(label, onClick) {
@@ -4795,6 +4970,8 @@ function renderAssistantPanel() {
     actions.sendChatMessage();
   });
 
+  let sendButton = null;
+
   const input = document.createElement('textarea');
   input.className = 'assistant-input';
   input.placeholder = 'Ask for revisions, summaries, or Codex updates…';
@@ -4802,7 +4979,9 @@ function renderAssistantPanel() {
   input.rows = 3;
   input.addEventListener('input', (event) => {
     const nextValue = event.target.value;
-    sendButton.disabled = chatState.isSending || nextValue.trim().length === 0;
+    if (sendButton) {
+      sendButton.disabled = chatState.isSending || nextValue.trim().length === 0;
+    }
     markChatInputFocus(input.selectionStart, input.selectionEnd);
     actions.setChatInput(nextValue);
   });
@@ -4828,7 +5007,7 @@ function renderAssistantPanel() {
   form.appendChild(input);
 
   const controls = createElement('div', 'assistant-controls');
-  const sendButton = createElement('button', 'assistant-send', chatState.isSending ? 'Sending…' : 'Send');
+  sendButton = createElement('button', 'assistant-send', chatState.isSending ? 'Sending…' : 'Send');
   sendButton.type = 'submit';
   sendButton.disabled = chatState.isSending || (state.ui.chatInput || '').trim().length === 0;
   controls.appendChild(sendButton);

@@ -978,6 +978,7 @@ button {
   gap: 0.75rem;
   overflow-y: auto;
   padding-right: 0.25rem;
+  min-height: 0;
 }
 
 .workspace-beats-view {
@@ -2119,4 +2120,79 @@ button {
   height: 100%;
   font-size: 0.85rem;
   color: #94a3b8;
+}
+
+.manuscript-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  padding: 1.25rem;
+  overflow-y: auto;
+}
+
+.manuscript-act {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.manuscript-act-title {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.manuscript-chapter {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.manuscript-chapter-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #e2f1ff;
+}
+
+.manuscript-scene {
+  border: 1px solid rgba(79, 195, 175, 0.25);
+  border-radius: 0.75rem;
+  background: rgba(10, 16, 26, 0.6);
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.manuscript-scene-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.manuscript-scene-meta {
+  margin: 0;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8ea6c1;
+}
+
+.manuscript-scene-text {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: #f3f6ff;
+  white-space: pre-wrap;
+}
+
+.manuscript-empty {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #94a3b8;
+  font-style: italic;
 }
