@@ -296,6 +296,42 @@ const actions = {
       draft.ui.showAssistant = !draft.ui.showAssistant;
     });
   },
+  renameAct(actId, title) {
+    updateState((draft) => {
+      const act = draft.acts.find((item) => item.id === actId);
+      if (!act) {
+        return;
+      }
+      const trimmed = title.trim();
+      if (trimmed.length > 0) {
+        act.title = trimmed;
+      }
+    });
+  },
+  renameChapter(chapterId, title) {
+    updateState((draft) => {
+      const chapter = draft.chapters[chapterId];
+      if (!chapter) {
+        return;
+      }
+      const trimmed = title.trim();
+      if (trimmed.length > 0) {
+        chapter.title = trimmed;
+      }
+    });
+  },
+  renameScene(sceneId, title) {
+    updateState((draft) => {
+      const scene = draft.scenes[sceneId];
+      if (!scene) {
+        return;
+      }
+      const trimmed = title.trim();
+      if (trimmed.length > 0) {
+        scene.title = trimmed;
+      }
+    });
+  },
   selectCodexEntry(entryId) {
     updateState((draft) => {
       draft.codex.selectedId = entryId;
@@ -355,7 +391,18 @@ function renderOutline() {
     const actContainer = createElement('div', 'outline-act');
     const actHeader = createElement('div', 'outline-act-header');
     const actHeaderText = document.createElement('div');
-    actHeaderText.appendChild(createElement('h3', 'outline-act-title', `Act ${act.order}: ${act.title}`));
+    const actTitleRow = createElement('div', 'outline-act-title-row');
+    actTitleRow.appendChild(createElement('h3', 'outline-act-title', `Act ${act.order}: ${act.title}`));
+    const renameActButton = createElement('button', 'button-icon', '✎');
+    renameActButton.title = 'Rename act';
+    renameActButton.addEventListener('click', () => {
+      const nextTitle = window.prompt('Rename act', act.title);
+      if (nextTitle !== null) {
+        actions.renameAct(act.id, nextTitle);
+      }
+    });
+    actTitleRow.appendChild(renameActButton);
+    actHeaderText.appendChild(actTitleRow);
     actHeaderText.appendChild(
       createElement(
         'p',
@@ -380,9 +427,20 @@ function renderOutline() {
         }
         const chapterContainer = createElement('div', 'outline-chapter');
         const chapterHeader = createElement('div', 'outline-chapter-header');
-        chapterHeader.appendChild(
+        const chapterTitleRow = createElement('div', 'outline-chapter-title-row');
+        chapterTitleRow.appendChild(
           createElement('h4', 'outline-chapter-title', `Chapter ${chapter.order}: ${chapter.title}`)
         );
+        const renameChapterButton = createElement('button', 'button-icon', '✎');
+        renameChapterButton.title = 'Rename chapter';
+        renameChapterButton.addEventListener('click', () => {
+          const nextTitle = window.prompt('Rename chapter', chapter.title);
+          if (nextTitle !== null) {
+            actions.renameChapter(chapter.id, nextTitle);
+          }
+        });
+        chapterTitleRow.appendChild(renameChapterButton);
+        chapterHeader.appendChild(chapterTitleRow);
         const addSceneButton = createElement('button', 'button-outline', '+ Scene');
         addSceneButton.addEventListener('click', () => actions.addScene(chapter.id));
         chapterHeader.appendChild(addSceneButton);
@@ -403,14 +461,26 @@ function renderOutline() {
               'button',
               `scene-button${state.selectedSceneId === scene.id ? ' is-active' : ''}`
             );
+            const buttonBody = createElement('div', 'scene-button-body');
             const buttonTitle = createElement('p', 'scene-button-title', scene.title);
             const buttonMeta = createElement(
               'p',
               'scene-button-meta',
               `${scene.wordCount} ${scene.wordCount === 1 ? 'word' : 'words'} · ${scene.draftStatus}`
             );
-            button.appendChild(buttonTitle);
-            button.appendChild(buttonMeta);
+            buttonBody.appendChild(buttonTitle);
+            buttonBody.appendChild(buttonMeta);
+            button.appendChild(buttonBody);
+            const renameScene = createElement('button', 'button-icon scene-rename', '✎');
+            renameScene.title = 'Rename scene';
+            renameScene.addEventListener('click', (event) => {
+              event.stopPropagation();
+              const nextTitle = window.prompt('Rename scene', scene.title);
+              if (nextTitle !== null) {
+                actions.renameScene(scene.id, nextTitle);
+              }
+            });
+            button.appendChild(renameScene);
             button.addEventListener('click', () => actions.selectScene(scene.id));
             listItem.appendChild(button);
             sceneList.appendChild(listItem);
@@ -440,12 +510,58 @@ function renderWorkspace() {
     return;
   }
 
-  const container = createElement('div', 'workspace');
-  container.appendChild(renderSceneToolbar(selectedScene));
+  const shell = createElement('div', 'workspace-shell');
 
-  const body = createElement('div', 'workspace-body');
+  const header = createElement('header', 'workspace-header');
+  const breadcrumb = createElement('div', 'workspace-breadcrumb');
+  const locationLabel = createElement('span', 'workspace-breadcrumb-label', 'Scene');
+  const locationValue = createElement('span', 'workspace-breadcrumb-value', selectedScene.title);
+  breadcrumb.appendChild(locationLabel);
+  breadcrumb.appendChild(locationValue);
+  const hierarchy = createSceneLocation(selectedScene);
+  if (hierarchy) {
+    breadcrumb.appendChild(createElement('span', 'workspace-breadcrumb-meta', hierarchy));
+  }
+  header.appendChild(breadcrumb);
 
-  const editor = createElement('div', 'workspace-editor');
+  const headerActions = createElement('div', 'workspace-header-actions');
+  const beatsToggle = createElement(
+    'button',
+    `button-toggle${state.ui.showBeats ? ' is-active' : ''}`,
+    state.ui.showBeats ? 'Hide beats' : 'Show beats'
+  );
+  beatsToggle.addEventListener('click', () => actions.toggleBeats());
+  const assistantToggle = createElement(
+    'button',
+    `button-toggle${state.ui.showAssistant ? ' is-active' : ''}`,
+    state.ui.showAssistant ? 'Hide assistant' : 'Show assistant'
+  );
+  assistantToggle.addEventListener('click', () => actions.toggleAssistant());
+  headerActions.appendChild(beatsToggle);
+  headerActions.appendChild(assistantToggle);
+  header.appendChild(headerActions);
+
+  shell.appendChild(header);
+
+  const content = createElement('div', 'workspace-content');
+  const editorColumn = createElement('div', 'workspace-editor');
+
+  const editorHeader = createElement('div', 'editor-header');
+  editorHeader.appendChild(createElement('h2', 'editor-title', selectedScene.title));
+  editorHeader.appendChild(createElement('p', 'editor-meta', createSceneSummary(selectedScene)));
+  editorHeader.appendChild(createElement('p', 'editor-updated', formatUpdatedAt(selectedScene.lastUpdated)));
+  editorColumn.appendChild(editorHeader);
+
+  const editorControls = createElement('div', 'editor-controls');
+  editorControls.appendChild(createElement('p', 'editor-control-label', 'Drafting quick actions'));
+  const controlButtons = createElement('div', 'editor-control-buttons');
+  controlButtons.appendChild(createQuickActionButton('Manual beats', () => actions.toggleBeats()));
+  controlButtons.appendChild(createQuickActionButton('AI draft (placeholder)', () => actions.toggleAssistant()));
+  editorControls.appendChild(controlButtons);
+  editorColumn.appendChild(editorControls);
+
+  const textPanel = createElement('div', 'editor-panel');
+  textPanel.appendChild(createElement('label', 'editor-label', 'Scene text'));
   const textarea = document.createElement('textarea');
   textarea.className = 'workspace-textarea';
   textarea.value = selectedScene.text;
@@ -453,68 +569,43 @@ function renderWorkspace() {
   textarea.addEventListener('input', (event) => {
     actions.updateSceneText(selectedScene.id, event.target.value);
   });
-  editor.appendChild(textarea);
-  body.appendChild(editor);
+  textPanel.appendChild(textarea);
+  editorColumn.appendChild(textPanel);
 
+  content.appendChild(editorColumn);
+
+  const sideColumn = createElement('div', 'workspace-side');
   if (state.ui.showBeats) {
-    const beatAside = createElement('aside', 'workspace-side workspace-side--beats');
-    beatAside.appendChild(renderBeatList(selectedScene));
-    body.appendChild(beatAside);
+    sideColumn.appendChild(renderBeatList(selectedScene));
   }
-
   if (state.ui.showAssistant) {
-    const assistantAside = createElement('aside', 'workspace-side workspace-side--assistant');
-    assistantAside.appendChild(renderAssistantPanel());
-    body.appendChild(assistantAside);
+    sideColumn.appendChild(renderAssistantPanel());
+  }
+  if (sideColumn.children.length === 0) {
+    const tipsPanel = createElement('div', 'workspace-side-empty');
+    tipsPanel.appendChild(createElement('h3', 'workspace-side-title', 'Workspace tips'));
+    const tipsList = createElement('ul', 'workspace-side-tips');
+    [
+      'Use the outline to add new acts, chapters, or scenes.',
+      'Keep beats visible while drafting to stay aligned.',
+      'Capture Codex notes as soon as new names appear.'
+    ].forEach((tip) => {
+      const item = createElement('li', 'workspace-side-tip', tip);
+      tipsList.appendChild(item);
+    });
+    tipsPanel.appendChild(tipsList);
+    sideColumn.appendChild(tipsPanel);
   }
 
-  container.appendChild(body);
-  workspaceRoot.appendChild(container);
+  content.appendChild(sideColumn);
+  shell.appendChild(content);
+  workspaceRoot.appendChild(shell);
 }
 
-function renderSceneToolbar(scene) {
-  const toolbar = createElement('header', 'scene-toolbar');
-  const textWrapper = document.createElement('div');
-  textWrapper.appendChild(createElement('p', 'scene-toolbar-path', buildSceneHierarchy(scene)));
-  textWrapper.appendChild(createElement('h2', 'scene-toolbar-title', scene.title));
-  const updatedAt = new Date(scene.lastUpdated).toLocaleString();
-  textWrapper.appendChild(
-    createElement('p', 'scene-toolbar-meta', `${scene.wordCount} words · updated ${updatedAt}`)
-  );
-  toolbar.appendChild(textWrapper);
-
-  const actionsWrapper = createElement('div', 'toolbar-actions');
-  const beatsButton = createElement(
-    'button',
-    `toolbar-button${state.ui.showBeats ? ' is-active' : ''}`,
-    state.ui.showBeats ? 'Hide Beats' : 'Show Beats'
-  );
-  beatsButton.addEventListener('click', () => actions.toggleBeats());
-  const assistantButton = createElement(
-    'button',
-    `toolbar-button${state.ui.showAssistant ? ' is-active' : ''}`,
-    state.ui.showAssistant ? 'Close Assistant' : 'AI Assistant'
-  );
-  assistantButton.addEventListener('click', () => actions.toggleAssistant());
-  actionsWrapper.appendChild(beatsButton);
-  actionsWrapper.appendChild(assistantButton);
-  toolbar.appendChild(actionsWrapper);
-
-  return toolbar;
-}
-
-function buildSceneHierarchy(scene) {
-  const chapter = state.chapters[scene.chapterId];
-  const act = chapter ? state.acts.find((item) => item.id === chapter.actId) : null;
-  const parts = [];
-  if (act) {
-    parts.push(act.title);
-  }
-  if (chapter) {
-    parts.push(chapter.title);
-  }
-  parts.push(scene.title);
-  return parts.join(' / ');
+function createQuickActionButton(label, onClick) {
+  const button = createElement('button', 'button-ghost', label);
+  button.addEventListener('click', onClick);
+  return button;
 }
 
 function renderBeatList(scene) {
@@ -565,6 +656,38 @@ function renderAssistantPanel() {
     )
   );
   return panel;
+}
+
+function createSceneLocation(scene) {
+  const chapter = state.chapters[scene.chapterId];
+  const act = chapter ? state.acts.find((item) => item.id === chapter.actId) : null;
+  const parts = [];
+  if (act) {
+    parts.push(act.title);
+  }
+  if (chapter) {
+    parts.push(chapter.title);
+  }
+  return parts.join(' › ');
+}
+
+function createSceneSummary(scene) {
+  const beats = scene.beats.length;
+  const words = scene.wordCount;
+  const beatsLabel = `${beats} ${beats === 1 ? 'beat' : 'beats'}`;
+  const wordsLabel = `${words} ${words === 1 ? 'word' : 'words'}`;
+  return `${beatsLabel} · ${wordsLabel} · ${scene.draftStatus}`;
+}
+
+function formatUpdatedAt(value) {
+  if (!value) {
+    return 'Last updated: not yet saved';
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return 'Last updated: not yet saved';
+  }
+  return `Last updated ${parsed.toLocaleString()}`;
 }
 
 function renderCodex() {
