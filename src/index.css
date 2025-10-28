@@ -994,20 +994,22 @@ button {
   flex-direction: column;
   gap: 0.5rem;
   flex: 1;
-  overflow-y: auto;
-  padding-right: 0.25rem;
+  min-height: 0;
 }
 
 .editor-panel {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+  flex: 1;
+  min-height: 0;
 }
 
 .workspace-textarea {
   width: 100%;
-  min-height: 32rem;
   flex: 1;
+  min-height: 0;
+  height: 100%;
   background: rgba(8, 12, 20, 0.85);
   color: #e2e8f0;
   border-radius: 0.75rem;
