@@ -12,21 +12,25 @@
   <body>
     <div class="app-shell">
       <header class="app-header">
-        <h1 class="app-title">SimpleWriter v2</h1>
-        <p class="app-subtitle">Local-first fiction drafting studio with outline, scene, and codex management.</p>
+        <div class="app-header-text">
+          <h1 class="app-title">SimpleWriter v2</h1>
+          <p class="app-subtitle">Local-first fiction drafting studio with outline, scene, and codex management.</p>
+        </div>
+        <div id="app-header-actions" class="app-header-actions"></div>
       </header>
       <main class="main-layout">
-        <section class="panel">
+        <section class="panel panel-outline">
           <div id="outline-root"></div>
         </section>
-        <section class="panel">
-          <div id="workspace-root"></div>
+        <section class="panel panel-main">
+          <div id="main-root"></div>
         </section>
-        <section class="panel">
-          <div id="codex-root"></div>
+        <section class="panel panel-assistant">
+          <div id="assistant-root"></div>
         </section>
       </main>
     </div>
+    <div id="settings-root"></div>
     <script>
       (function ensureFreshAssets() {
         const versionStamp = Date.now().toString(36);
