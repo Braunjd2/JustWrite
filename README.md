@@ -4,6 +4,17 @@ SimpleWriter v2 is a local-first fiction drafting tool that keeps your manuscrip
 
 ## Getting Started
 
+### One-click launchers
+
+If you prefer not to type any terminal commands, double-click the launcher that matches your operating system:
+
+- **Windows:** `LaunchSimpleWriter.bat`
+- **macOS (or Linux with a GUI):** `LaunchSimpleWriter.command`
+
+Each launcher checks for Node.js, starts the lightweight server, and opens [http://localhost:5173](http://localhost:5173) in your default browser. Close the terminal window it opens to stop the app.
+
+You can still run everything manually if you enjoy the command line:
+
 1. Open a terminal and move into the project folder. From the repository root that usually looks like:
 
    ```bash
