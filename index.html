@@ -3,8 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>SimpleWriter v2</title>
-    <link rel="stylesheet" href="./src/index.css" />
+    <link rel="stylesheet" id="app-stylesheet" href="./src/index.css" />
   </head>
   <body>
     <div class="app-shell">
@@ -24,6 +27,28 @@
         </section>
       </main>
     </div>
-    <script type="module" src="./src/app.js"></script>
+    <script>
+      (function ensureFreshAssets() {
+        const versionStamp = Date.now().toString(36);
+        const stylesheet = document.getElementById('app-stylesheet');
+        if (stylesheet) {
+          const baseHref = stylesheet.getAttribute('href') || '';
+          const cleanHref = baseHref.split('?')[0];
+          stylesheet.href = `${cleanHref}?v=${versionStamp}`;
+        }
+
+        const script = document.createElement('script');
+        script.type = 'module';
+        script.src = `./src/app.js?v=${versionStamp}`;
+        script.onerror = () => {
+          const fallback = document.createElement('p');
+          fallback.textContent = 'Unable to load the SimpleWriter app. Please make sure the src/ folder is next to index.html.';
+          fallback.style.padding = '1rem';
+          fallback.style.color = '#f8f8ff';
+          document.body.appendChild(fallback);
+        };
+        document.body.appendChild(script);
+      })();
+    </script>
   </body>
 </html>

@@ -39,6 +39,10 @@ You can still run everything manually if you enjoy the command line:
 
 All interactivity is implemented with modern vanilla JavaScript, custom state helpers, and handcrafted utility styles defined in `src/index.css`, so no additional packages are required for installation beyond Node.js.
 
+### Zero-setup option
+
+Prefer to skip the server entirely? Double-click `index.html`. The page now stamps the stylesheet and script URLs with a unique version on every load, so your browser will always fetch the latest `src/index.css` and `src/app.js` that ship with the project—even if it previously cached an older copy. Just keep the `src/` folder beside `index.html` so those files can be found.
+
 ## Project Structure
 
 ```
