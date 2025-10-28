@@ -20,6 +20,7 @@ const MIME_TYPES = {
 };
 
 const PORT = Number(process.env.PORT) || 5173;
+const HOST = process.env.HOST || '127.0.0.1';
 
 async function resolveFilePath(url) {
   const cleanUrl = url.split('?')[0].split('#')[0];
@@ -70,6 +71,7 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`SimpleWriter server running at http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  const hostname = HOST === '0.0.0.0' ? 'localhost' : HOST;
+  console.log(`SimpleWriter server running at http://${hostname}:${PORT}`);
 });

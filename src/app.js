@@ -33,6 +33,16 @@ const CHARACTER_CORE_SECTION_LABELS = {
   relationships: 'Relationships'
 };
 
+const DEFAULT_SIDEBAR_WIDTHS = { left: 320, right: 280 };
+const SIDEBAR_LIMITS = {
+  left: { min: 240, max: 560 },
+  right: { min: 220, max: 480 },
+  centerMin: 520
+};
+const LAYOUT_RESIZER_WIDTH = 12;
+const LAYOUT_RESIZER_COUNT = 2;
+const MAX_MEDIA_SIZE_BYTES = 2 * 1024 * 1024;
+
 const AI_PROVIDERS = [
   { id: 'openai:gpt-5', label: 'OpenAI · GPT-5' },
   { id: 'openai:gpt-4.1', label: 'OpenAI · GPT-4.1' },
@@ -130,6 +140,41 @@ function normalizeCodexDetails(list) {
         sourceBeatId: typeof detail.sourceBeatId === 'string' ? detail.sourceBeatId : null,
         createdAt: detail.createdAt || new Date().toISOString(),
         updatedAt: detail.updatedAt || detail.createdAt || new Date().toISOString()
+      };
+    })
+    .filter(Boolean);
+}
+
+function createCodexMedia(media) {
+  if (!media || typeof media.dataUrl !== 'string' || media.dataUrl.trim().length === 0) {
+    throw new Error('Invalid Codex media payload');
+  }
+  return {
+    id: media.id || createId('media'),
+    name: typeof media.name === 'string' && media.name.trim().length > 0 ? media.name.trim() : 'Image',
+    type: typeof media.type === 'string' && media.type.trim().length > 0 ? media.type : 'image',
+    size: typeof media.size === 'number' ? media.size : 0,
+    dataUrl: media.dataUrl,
+    createdAt: media.createdAt || new Date().toISOString()
+  };
+}
+
+function normalizeCodexMedia(list) {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+  return list
+    .map((item) => {
+      if (!item || typeof item.dataUrl !== 'string' || item.dataUrl.trim().length === 0) {
+        return null;
+      }
+      return {
+        id: item.id || createId('media'),
+        name: typeof item.name === 'string' && item.name.trim().length > 0 ? item.name.trim() : 'Image',
+        type: typeof item.type === 'string' && item.type.trim().length > 0 ? item.type : 'image',
+        size: typeof item.size === 'number' ? item.size : 0,
+        dataUrl: item.dataUrl,
+        createdAt: item.createdAt || new Date().toISOString()
       };
     })
     .filter(Boolean);
@@ -375,17 +420,17 @@ function createInitialState() {
   const codexPlaceId = createId('codex');
   const now = new Date().toISOString();
 
-  return {
+  const initialState = {
     acts: [
-      { id: actId, title: 'Act 1', order: 1, chapterIds: [chapterId] }
+      { id: actId, title: '', order: 1, chapterIds: [chapterId] }
     ],
     chapters: {
-      [chapterId]: { id: chapterId, title: 'Chapter 1', order: 1, actId, sceneIds: [sceneId] }
+      [chapterId]: { id: chapterId, title: '', order: 1, actId, sceneIds: [sceneId] }
     },
     scenes: {
       [sceneId]: {
         id: sceneId,
-        title: 'Opening Scene',
+        title: '',
         order: 1,
         chapterId,
         actId,
@@ -412,6 +457,7 @@ function createInitialState() {
           category: 'character',
           summary: 'Protagonist and reluctant hero.',
           details: [],
+          media: [],
           background: createCharacterBackground(),
           core: createCharacterCoreSections({
             appearance: [{ text: 'First appears in the opening scene.' }]
@@ -422,7 +468,8 @@ function createInitialState() {
           name: 'Harbor District',
           category: 'place',
           summary: 'Rain-soaked sprawl where the story begins.',
-          details: [createCodexDetail('Establishes the noir atmosphere of the city.', sceneId)]
+          details: [createCodexDetail('Establishes the noir atmosphere of the city.', sceneId)],
+          media: []
         }
       },
       selectedId: codexCharacterId
@@ -440,12 +487,21 @@ function createInitialState() {
     },
     ui: {
       activeMainView: 'workspace',
+      sidebarView: 'outline',
+      layout: {
+        sidebarWidths: { ...DEFAULT_SIDEBAR_WIDTHS }
+      },
+      sceneScanCollapsed: {},
       showBeats: false,
       showAssistant: true,
       showSettings: false,
       scanStatus: null,
       selectionContext: null,
       generatingBeats: false,
+      codexSearch: '',
+      codexSidebar: {
+        collapsedCategories: []
+      },
       chat: {
         isSending: false,
         error: null
@@ -458,6 +514,8 @@ function createInitialState() {
       }
     }
   };
+  updateAllCodexRelations(initialState.codex.entries);
+  return initialState;
 }
 
 function normalizeState(value) {
@@ -539,16 +597,18 @@ function normalizeState(value) {
 
       sortedScenes.forEach((scene, sceneIndex) => {
         const newSceneOrder = sceneIndex + 1;
-      const newSceneId = nextSceneId(newChapterId, newSceneOrder);
+        const newSceneId = nextSceneId(newChapterId, newSceneOrder);
         if (scene && typeof scene.id === 'string') {
           sceneIdMap.set(scene.id, newSceneId);
         }
 
         const beats = normalizeBeats(newSceneId, scene?.beats || []);
+        const normalizedSceneTitle =
+          scene && typeof scene.title === 'string' ? scene.title : '';
 
         scenesNormalized[newSceneId] = {
           id: newSceneId,
-          title: scene?.title || `Scene ${newSceneOrder}`,
+          title: normalizedSceneTitle,
           order: newSceneOrder,
           chapterId: newChapterId,
           actId: newActId,
@@ -563,9 +623,12 @@ function normalizeState(value) {
         newSceneIds.push(newSceneId);
       });
 
+      const normalizedChapterTitle =
+        chapter && typeof chapter.title === 'string' ? chapter.title : '';
+
       chaptersNormalized[newChapterId] = {
         id: newChapterId,
-        title: chapter?.title || `Chapter ${newChapterOrder}`,
+        title: normalizedChapterTitle,
         order: newChapterOrder,
         actId: newActId,
         sceneIds: newSceneIds
@@ -574,9 +637,11 @@ function normalizeState(value) {
       newChapterIds.push(newChapterId);
     });
 
+    const normalizedActTitle = act && typeof act.title === 'string' ? act.title : '';
+
     actsNormalized.push({
       id: newActId,
-      title: act?.title || `Act ${newActOrder}`,
+      title: normalizedActTitle,
       order: newActOrder,
       chapterIds: newChapterIds
     });
@@ -630,7 +695,8 @@ function normalizeState(value) {
         name: entry.name || 'Entry',
         category,
         summary: entry.summary || '',
-        details
+        details,
+        media: normalizeCodexMedia(entry.media)
       };
 
       if (category === 'character') {
@@ -641,6 +707,8 @@ function normalizeState(value) {
       return [id, normalizedEntry];
     })
   );
+
+  updateAllCodexRelations(codexEntriesNormalized);
 
   const codexSelectedId =
     codexSelectedInput && codexEntriesNormalized[codexSelectedInput]
@@ -678,6 +746,7 @@ function normalizeState(value) {
     uiValue.activeMainView === 'codex' || uiValue.activeMainView === 'workspace'
       ? uiValue.activeMainView
       : base.ui.activeMainView;
+  const sidebarView = uiValue.sidebarView === 'codex' ? 'codex' : base.ui.sidebarView;
   const validActIds = new Set(actsNormalized.map((act) => act.id));
   const validChapterIds = new Set(Object.keys(chaptersNormalized));
   const validSceneIds = new Set(Object.keys(scenesNormalized));
@@ -711,14 +780,40 @@ function normalizeState(value) {
     collapsedChapters: remapOutlineIds(outlineRaw.collapsedChapters, chapterIdMap, validChapterIds),
     expandedScenes: remapOutlineIds(outlineRaw.expandedScenes, sceneIdMap, validSceneIds)
   };
+  const layoutValue = uiValue.layout && typeof uiValue.layout === 'object' ? uiValue.layout : {};
+  const sidebarWidthsNormalized = normalizeSidebarWidths(layoutValue.sidebarWidths || {});
+  const codexSearchValue = typeof uiValue.codexSearch === 'string' ? uiValue.codexSearch : '';
+  const codexSidebarValue =
+    uiValue.codexSidebar && typeof uiValue.codexSidebar === 'object' ? uiValue.codexSidebar : {};
+  const collapsedCategories = Array.isArray(codexSidebarValue.collapsedCategories)
+    ? codexSidebarValue.collapsedCategories.filter((item) => typeof item === 'string')
+    : [];
+  const rawSceneScanCollapsed = uiValue.sceneScanCollapsed && typeof uiValue.sceneScanCollapsed === 'object'
+    ? uiValue.sceneScanCollapsed
+    : {};
+  const sceneScanCollapsedNormalized = {};
+  Object.entries(rawSceneScanCollapsed).forEach(([key, value]) => {
+    if (typeof key === 'string' && value) {
+      sceneScanCollapsedNormalized[key] = true;
+    }
+  });
   const ui = {
     ...base.ui,
     activeMainView,
+    sidebarView,
+    layout: {
+      sidebarWidths: sidebarWidthsNormalized
+    },
+    sceneScanCollapsed: sceneScanCollapsedNormalized,
     showBeats: Boolean(uiValue.showBeats),
     showAssistant: uiValue.showAssistant === false ? false : true,
     showSettings: Boolean(uiValue.showSettings),
     scanStatus: null,
     generatingBeats: false,
+    codexSearch: codexSearchValue,
+    codexSidebar: {
+      collapsedCategories
+    },
     selectionContext: selectionContextNormalized,
     chat: {
       ...base.ui.chat,
@@ -975,6 +1070,23 @@ function ensureSelections() {
   if (!state.ui.outline) {
     state.ui.outline = { collapsedActs: [], collapsedChapters: [], expandedScenes: [] };
   }
+  if (!state.ui.layout || !state.ui.layout.sidebarWidths) {
+    state.ui.layout = { sidebarWidths: { ...DEFAULT_SIDEBAR_WIDTHS } };
+  } else {
+    state.ui.layout.sidebarWidths = normalizeSidebarWidths(state.ui.layout.sidebarWidths);
+  }
+  if (!state.ui.sceneScanCollapsed || typeof state.ui.sceneScanCollapsed !== 'object') {
+    state.ui.sceneScanCollapsed = {};
+  }
+  if (typeof state.ui.codexSearch !== 'string') {
+    state.ui.codexSearch = '';
+  }
+  if (!state.ui.codexSidebar || !Array.isArray(state.ui.codexSidebar.collapsedCategories)) {
+    state.ui.codexSidebar = { collapsedCategories: [] };
+  } else {
+    state.ui.codexSidebar.collapsedCategories = state.ui.codexSidebar.collapsedCategories
+      .filter((item) => typeof item === 'string');
+  }
 }
 
 function refreshOutlineOrdering(draft) {
@@ -1072,14 +1184,14 @@ function removeChapterFromState(draft, chapterId) {
 }
 
 const actions = {
-  addAct(title = 'New Act') {
+  addAct(title = '') {
     updateState((draft) => {
       const nextOrder = getNextOrder(draft.acts, (act) => act?.order || 0);
       const id = nextActId(nextOrder);
       draft.acts.push({ id, title, order: nextOrder, chapterIds: [] });
     });
   },
-  addChapter(actId, title = 'New Chapter') {
+  addChapter(actId, title = '') {
     updateState((draft) => {
       const act = draft.acts.find((item) => item.id === actId);
       if (!act) {
@@ -1097,7 +1209,7 @@ const actions = {
       act.chapterIds.push(id);
     });
   },
-  addScene(chapterId, title = 'New Scene') {
+  addScene(chapterId, title = '') {
     updateState((draft) => {
       const chapter = draft.chapters[chapterId];
       if (!chapter) {
@@ -1242,6 +1354,64 @@ const actions = {
       draft.ui.activeMainView = view;
     });
   },
+  setSidebarView(view) {
+    updateState((draft) => {
+      const next = view === 'codex' ? 'codex' : 'outline';
+      if (draft.ui.sidebarView === next) {
+        return false;
+      }
+      draft.ui.sidebarView = next;
+    });
+  },
+  setCodexSearch(value) {
+    const nextValue = typeof value === 'string' ? value : '';
+    updateState((draft) => {
+      if (draft.ui.codexSearch === nextValue) {
+        return false;
+      }
+      draft.ui.codexSearch = nextValue;
+    }, { skipHistory: true });
+  },
+  toggleCodexCategoryCollapse(categoryId, isOpen) {
+    if (!categoryId) {
+      return;
+    }
+    updateState((draft) => {
+      if (!draft.ui.codexSidebar || !Array.isArray(draft.ui.codexSidebar.collapsedCategories)) {
+        draft.ui.codexSidebar = { collapsedCategories: [] };
+      }
+      const collapsed = draft.ui.codexSidebar.collapsedCategories;
+      const index = collapsed.indexOf(categoryId);
+      const shouldCollapse = isOpen === undefined ? index === -1 : !isOpen;
+      if (shouldCollapse) {
+        if (index !== -1) {
+          return false;
+        }
+        collapsed.push(categoryId);
+      } else {
+        if (index === -1) {
+          return false;
+        }
+        collapsed.splice(index, 1);
+      }
+    }, { skipHistory: true });
+  },
+  setSidebarWidths(widths) {
+    if (!widths) {
+      return;
+    }
+    updateState((draft) => {
+      if (!draft.ui.layout) {
+        draft.ui.layout = { sidebarWidths: { ...DEFAULT_SIDEBAR_WIDTHS } };
+      }
+      const current = draft.ui.layout.sidebarWidths || { ...DEFAULT_SIDEBAR_WIDTHS };
+      const next = normalizeSidebarWidths(widths);
+      if (current.left === next.left && current.right === next.right) {
+        return false;
+      }
+      draft.ui.layout.sidebarWidths = next;
+    }, { skipHistory: true });
+  },
   toggleBeats() {
     updateState((draft) => {
       draft.ui.showBeats = !draft.ui.showBeats;
@@ -1340,6 +1510,21 @@ const actions = {
       }
     });
   },
+  toggleSceneScanCollapse(sceneId) {
+    if (!sceneId) {
+      return;
+    }
+    updateState((draft) => {
+      if (!draft.ui.sceneScanCollapsed || typeof draft.ui.sceneScanCollapsed !== 'object') {
+        draft.ui.sceneScanCollapsed = {};
+      }
+      if (draft.ui.sceneScanCollapsed[sceneId]) {
+        delete draft.ui.sceneScanCollapsed[sceneId];
+      } else {
+        draft.ui.sceneScanCollapsed[sceneId] = true;
+      }
+    }, { skipHistory: true });
+  },
   setChatInput(value) {
     if (state && state.ui.chatInput === value) {
       return;
@@ -1350,10 +1535,8 @@ const actions = {
       if (draft.ui.chat) {
         draft.ui.chat.error = null;
       }
-    }, { skipHistory: true });
-    globalThis.setTimeout(() => {
-      suppressChatBlurClear = false;
-    }, 0);
+    }, { skipHistory: true, skipRender: true });
+    suppressChatBlurClear = false;
   },
   clearChatHistory() {
     updateState((draft) => {
@@ -1524,110 +1707,84 @@ const actions = {
       }, { skipHistory: true });
     }
   },
-  reorderAct(actId, targetActId) {
+  shiftAct(actId, delta) {
     updateState((draft) => {
       const acts = draft.acts;
-      const sourceIndex = acts.findIndex((act) => act.id === actId);
-      if (sourceIndex === -1) {
+      const index = acts.findIndex((act) => act.id === actId);
+      if (index === -1) {
         return false;
       }
-      const [act] = acts.splice(sourceIndex, 1);
-      if (!targetActId) {
-        acts.push(act);
-      } else {
-        let targetIndex = acts.findIndex((item) => item.id === targetActId);
-        if (targetIndex === -1) {
-          targetIndex = acts.length;
-        }
-        acts.splice(targetIndex, 0, act);
+      const targetIndex = index + delta;
+      if (targetIndex < 0 || targetIndex >= acts.length) {
+        return false;
       }
+      const [act] = acts.splice(index, 1);
+      acts.splice(targetIndex, 0, act);
       refreshOutlineOrdering(draft);
     });
   },
-  moveChapter(chapterId, targetActId, targetIndex) {
+  shiftChapter(chapterId, delta) {
     updateState((draft) => {
       const chapter = draft.chapters[chapterId];
-      const targetAct = draft.acts.find((act) => act.id === targetActId);
-      if (!chapter || !targetAct) {
+      if (!chapter) {
         return false;
       }
-
-      const sameAct = chapter.actId === targetAct.id;
-      let sourceIndex = -1;
-      if (sameAct) {
-        sourceIndex = targetAct.chapterIds.indexOf(chapterId);
+      const act = draft.acts.find((item) => item.id === chapter.actId);
+      if (!act || !Array.isArray(act.chapterIds)) {
+        return false;
       }
-
-      const sourceAct = draft.acts.find((act) => act.id === chapter.actId);
-      if (sourceAct) {
-        const removalIndex = sourceAct.chapterIds.indexOf(chapterId);
-        if (removalIndex !== -1) {
-          sourceAct.chapterIds.splice(removalIndex, 1);
-        }
+      const index = act.chapterIds.indexOf(chapterId);
+      if (index === -1) {
+        return false;
       }
-
-      let insertionIndex = targetIndex;
-      if (sameAct && sourceIndex !== -1 && sourceIndex < targetIndex) {
-        insertionIndex = targetIndex - 1;
+      const targetIndex = index + delta;
+      if (targetIndex < 0 || targetIndex >= act.chapterIds.length) {
+        return false;
       }
-      insertionIndex = Math.max(0, Math.min(insertionIndex, targetAct.chapterIds.length));
-
-      targetAct.chapterIds.splice(insertionIndex, 0, chapterId);
-      chapter.actId = targetAct.id;
+      act.chapterIds.splice(index, 1);
+      act.chapterIds.splice(targetIndex, 0, chapterId);
       refreshOutlineOrdering(draft);
     });
   },
-  moveScene(sceneId, targetChapterId, targetIndex) {
+  shiftScene(sceneId, delta) {
     updateState((draft) => {
       const scene = draft.scenes[sceneId];
-      const targetChapter = draft.chapters[targetChapterId];
-      if (!scene || !targetChapter) {
+      if (!scene) {
         return false;
       }
-
-      const sameChapter = scene.chapterId === targetChapter.id;
-      let sourceIndex = -1;
-      if (sameChapter) {
-        sourceIndex = targetChapter.sceneIds.indexOf(sceneId);
+      const chapter = draft.chapters[scene.chapterId];
+      if (!chapter || !Array.isArray(chapter.sceneIds)) {
+        return false;
       }
-
-      const sourceChapter = draft.chapters[scene.chapterId];
-      if (sourceChapter) {
-        const removalIndex = sourceChapter.sceneIds.indexOf(sceneId);
-        if (removalIndex !== -1) {
-          sourceChapter.sceneIds.splice(removalIndex, 1);
-        }
+      const index = chapter.sceneIds.indexOf(sceneId);
+      if (index === -1) {
+        return false;
       }
-
-      let insertionIndex = targetIndex;
-      if (sameChapter && sourceIndex !== -1 && sourceIndex < targetIndex) {
-        insertionIndex = targetIndex - 1;
+      const targetIndex = index + delta;
+      if (targetIndex < 0 || targetIndex >= chapter.sceneIds.length) {
+        return false;
       }
-      insertionIndex = Math.max(0, Math.min(insertionIndex, targetChapter.sceneIds.length));
-
-      targetChapter.sceneIds.splice(insertionIndex, 0, sceneId);
-      scene.chapterId = targetChapter.id;
-      scene.actId = targetChapter.actId;
+      chapter.sceneIds.splice(index, 1);
+      chapter.sceneIds.splice(targetIndex, 0, sceneId);
       refreshOutlineOrdering(draft);
     });
   },
-  moveBeat(sceneId, beatId, targetIndex) {
+  shiftBeat(sceneId, beatId, delta) {
     updateState((draft) => {
       const scene = draft.scenes[sceneId];
       if (!scene || !Array.isArray(scene.beats)) {
         return false;
       }
-      const currentIndex = scene.beats.findIndex((beat) => beat.id === beatId);
-      if (currentIndex === -1) {
+      const index = scene.beats.findIndex((beat) => beat.id === beatId);
+      if (index === -1) {
         return false;
       }
-      const [beat] = scene.beats.splice(currentIndex, 1);
-      let insertionIndex = targetIndex;
-      if (currentIndex < targetIndex) {
-        insertionIndex = targetIndex - 1;
+      const targetIndex = index + delta;
+      if (targetIndex < 0 || targetIndex >= scene.beats.length) {
+        return false;
       }
-      insertionIndex = Math.max(0, Math.min(insertionIndex, scene.beats.length));
-      scene.beats.splice(insertionIndex, 0, beat);
+      const [beat] = scene.beats.splice(index, 1);
+      scene.beats.splice(targetIndex, 0, beat);
       scene.beats = normalizeBeats(sceneId, scene.beats);
     });
   },
@@ -1685,6 +1842,7 @@ const actions = {
         return false;
       }
       entry.summary = summary;
+      refreshCodexDerivedData(draft);
     });
   },
   toggleSettings() {
@@ -1790,7 +1948,8 @@ const actions = {
         name: normalizedName,
         category: normalizedCategory,
         summary: '',
-        details: []
+        details: [],
+        media: []
       };
       if (normalizedCategory === 'character') {
         entry.background = createCharacterBackground();
@@ -1798,6 +1957,7 @@ const actions = {
       }
       draft.codex.entries[id] = entry;
       draft.codex.selectedId = id;
+      refreshCodexDerivedData(draft);
     });
   },
   renameCodexEntry(entryId, name) {
@@ -1814,6 +1974,7 @@ const actions = {
         return false;
       }
       entry.name = normalizedName;
+      refreshCodexDerivedData(draft);
     });
   },
   updateCodexCategory(entryId, category) {
@@ -1826,6 +1987,9 @@ const actions = {
       if (!entry) {
         return false;
       }
+      if (entry.category === normalizedCategory) {
+        return false;
+      }
       entry.category = normalizedCategory;
       if (normalizedCategory === 'character') {
         entry.background = createCharacterBackground(entry.background);
@@ -1834,6 +1998,7 @@ const actions = {
         delete entry.background;
         delete entry.core;
       }
+      refreshCodexDerivedData(draft);
     });
   },
   deleteCodexEntry(entryId) {
@@ -1849,6 +2014,7 @@ const actions = {
         const ids = Object.keys(draft.codex.entries);
         draft.codex.selectedId = ids.length > 0 ? ids[0] : null;
       }
+      refreshCodexDerivedData(draft);
     });
   },
   addCodexDetail(entryId, sceneId = null) {
@@ -1864,6 +2030,7 @@ const actions = {
         entry.details = [];
       }
       entry.details.push(createCodexDetail('', sceneId));
+      refreshCodexDerivedData(draft);
     });
   },
   updateCodexDetail(entryId, detailId, updates) {
@@ -1916,6 +2083,7 @@ const actions = {
         return false;
       }
       detail.updatedAt = new Date().toISOString();
+      refreshCodexDerivedData(draft);
     });
   },
   removeCodexDetail(entryId, detailId) {
@@ -1932,7 +2100,46 @@ const actions = {
         return false;
       }
       entry.details.splice(index, 1);
+      refreshCodexDerivedData(draft);
     });
+  },
+  addCodexMedia(entryId, mediaPayload) {
+    if (!entryId || !mediaPayload || typeof mediaPayload.dataUrl !== 'string') {
+      return;
+    }
+    updateState((draft) => {
+      const entry = draft.codex.entries[entryId];
+      if (!entry) {
+        return false;
+      }
+      if (!Array.isArray(entry.media)) {
+        entry.media = [];
+      }
+      try {
+        entry.media.push(createCodexMedia(mediaPayload));
+      } catch (error) {
+        console.warn('Failed to add Codex media', error);
+        return false;
+      }
+      refreshCodexDerivedData(draft);
+    }, { skipHistory: true });
+  },
+  removeCodexMedia(entryId, mediaId) {
+    if (!entryId || !mediaId) {
+      return;
+    }
+    updateState((draft) => {
+      const entry = draft.codex.entries[entryId];
+      if (!entry || !Array.isArray(entry.media)) {
+        return false;
+      }
+      const index = entry.media.findIndex((item) => item.id === mediaId);
+      if (index === -1) {
+        return false;
+      }
+      entry.media.splice(index, 1);
+      refreshCodexDerivedData(draft);
+    }, { skipHistory: true });
   },
   updateCodexBackgroundField(entryId, field, value) {
     if (!entryId || !CHARACTER_BACKGROUND_FIELDS.includes(field)) {
@@ -1951,6 +2158,7 @@ const actions = {
         return false;
       }
       entry.background[field] = nextValue;
+      refreshCodexDerivedData(draft);
     });
   },
   addCodexCoreDetail(entryId, section) {
@@ -1977,6 +2185,7 @@ const actions = {
         sourceBeatId: null,
         createdAt: new Date().toISOString()
       });
+      refreshCodexDerivedData(draft);
     });
   },
   updateCodexCoreDetail(entryId, section, itemId, text) {
@@ -2006,6 +2215,7 @@ const actions = {
       }
       item.text = nextText;
       item.updatedAt = new Date().toISOString();
+      refreshCodexDerivedData(draft);
     });
   },
   removeCodexCoreDetail(entryId, section, itemId) {
@@ -2030,6 +2240,7 @@ const actions = {
         return false;
       }
       list.splice(index, 1);
+      refreshCodexDerivedData(draft);
     });
   },
   applyAssistantSuggestion(messageId) {
@@ -2247,6 +2458,10 @@ const mainRoot = document.getElementById('main-root');
 const assistantRoot = document.getElementById('assistant-root');
 const headerActionsRoot = document.getElementById('app-header-actions');
 const settingsRoot = document.getElementById('settings-root');
+const layoutRoot = document.querySelector('.main-layout');
+const outlinePanel = layoutRoot ? layoutRoot.querySelector('.panel-outline') : null;
+const mainPanel = layoutRoot ? layoutRoot.querySelector('.panel-main') : null;
+const assistantPanel = layoutRoot ? layoutRoot.querySelector('.panel-assistant') : null;
 
 if (!headerActionsRoot) {
   throw new Error('Header actions root not found');
@@ -2264,172 +2479,17 @@ if (!settingsRoot) {
   throw new Error('Settings root not found');
 }
 
-let dragPayload = null;
-
-function handleDragStart(event) {
-  const target = event.currentTarget;
-  const type = target?.dataset?.dragType;
-  if (!type) {
-    return;
-  }
-  dragPayload = {
-    type,
-    actId: target.dataset.actId || null,
-    chapterId: target.dataset.chapterId || null,
-    sceneId: target.dataset.sceneId || null,
-    beatId: target.dataset.beatId || null
-  };
-  if (event.dataTransfer) {
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', type);
-  }
+if (!layoutRoot || !outlinePanel || !mainPanel || !assistantPanel) {
+  throw new Error('Main layout panels not found');
 }
 
-function handleDragEnd() {
-  dragPayload = null;
-}
+const leftResizer = document.createElement('div');
+leftResizer.className = 'panel-resizer panel-resizer-left';
+layoutRoot.insertBefore(leftResizer, mainPanel);
 
-function canDrop(payload, dropType, target) {
-  if (!payload || !dropType) {
-    return false;
-  }
-  if (payload.type === 'act') {
-    return dropType === 'act' || dropType === 'act-end';
-  }
-  if (payload.type === 'chapter') {
-    if (dropType === 'chapter' || dropType === 'chapter-end') {
-      const targetActId = target?.dataset?.actId;
-      return targetActId && targetActId === payload.actId;
-    }
-    return false;
-  }
-  if (payload.type === 'scene') {
-    if (dropType === 'scene' || dropType === 'scene-end') {
-      const targetChapterId = target?.dataset?.chapterId;
-      return targetChapterId && targetChapterId === payload.chapterId;
-    }
-    return false;
-  }
-  if (payload.type === 'beat') {
-    if (dropType === 'beat' || dropType === 'beat-end') {
-      const targetSceneId = target?.dataset?.sceneId;
-      return targetSceneId && targetSceneId === payload.sceneId;
-    }
-    return false;
-  }
-  return false;
-}
-
-function handleDragOver(event) {
-  if (!dragPayload) {
-    return;
-  }
-  const dropType = event.currentTarget.dataset.dropType;
-  if (canDrop(dragPayload, dropType, event.currentTarget)) {
-    event.preventDefault();
-    if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = 'move';
-    }
-    event.currentTarget.classList.add('is-drop-target');
-  }
-}
-
-function handleDrop(event) {
-  if (!dragPayload) {
-    return;
-  }
-  const target = event.currentTarget;
-  const dropType = target.dataset.dropType;
-  if (!canDrop(dragPayload, dropType, target)) {
-    return;
-  }
-
-  event.preventDefault();
-  event.stopPropagation();
-  target.classList.remove('is-drop-target');
-
-  if (dragPayload.type === 'act') {
-    if (dropType === 'act') {
-      const targetActId = target.dataset.actId;
-      if (dragPayload.actId && targetActId && dragPayload.actId !== targetActId) {
-        actions.reorderAct(dragPayload.actId, targetActId);
-      }
-    } else if (dropType === 'act-end') {
-      if (dragPayload.actId) {
-        actions.reorderAct(dragPayload.actId, null);
-      }
-    }
-  } else if (dragPayload.type === 'chapter') {
-    const targetActId = target.dataset.actId;
-    if (!targetActId) {
-      return;
-    }
-    if (dropType === 'chapter') {
-      const targetChapterId = target.dataset.chapterId;
-      if (dragPayload.chapterId && targetChapterId && dragPayload.chapterId !== targetChapterId) {
-        const act = state.acts.find((actItem) => actItem.id === targetActId);
-        if (!act) {
-          return;
-        }
-        const targetIndex = act.chapterIds.indexOf(targetChapterId);
-        if (targetIndex !== -1) {
-          actions.moveChapter(dragPayload.chapterId, targetActId, targetIndex);
-        }
-      }
-    } else if (dropType === 'chapter-end') {
-      const act = state.acts.find((actItem) => actItem.id === targetActId);
-      const targetIndex = act ? act.chapterIds.length : 0;
-      actions.moveChapter(dragPayload.chapterId, targetActId, targetIndex);
-    }
-  } else if (dragPayload.type === 'scene') {
-    const targetChapterId = target.dataset.chapterId;
-    if (!targetChapterId) {
-      return;
-    }
-    const chapter = state.chapters[targetChapterId];
-    if (!chapter) {
-      return;
-    }
-    if (dropType === 'scene') {
-      const targetSceneId = target.dataset.sceneId;
-      if (dragPayload.sceneId && targetSceneId && dragPayload.sceneId !== targetSceneId) {
-        const targetIndex = chapter.sceneIds.indexOf(targetSceneId);
-        if (targetIndex !== -1) {
-          actions.moveScene(dragPayload.sceneId, targetChapterId, targetIndex);
-        }
-      }
-    } else if (dropType === 'scene-end') {
-      actions.moveScene(dragPayload.sceneId, targetChapterId, chapter.sceneIds.length);
-    }
-  } else if (dragPayload.type === 'beat') {
-    const targetSceneId = target.dataset.sceneId;
-    if (!targetSceneId) {
-      return;
-    }
-    const scene = state.scenes[targetSceneId];
-    if (!scene) {
-      return;
-    }
-    if (dropType === 'beat') {
-      const targetBeatId = target.dataset.beatId;
-      if (dragPayload.beatId && targetBeatId && dragPayload.beatId !== targetBeatId) {
-        const targetIndex = scene.beats.findIndex((beat) => beat.id === targetBeatId);
-        if (targetIndex !== -1) {
-          actions.moveBeat(dragPayload.sceneId, dragPayload.beatId, targetIndex);
-        }
-      }
-    } else if (dropType === 'beat-end') {
-      const targetIndex = scene.beats.length;
-      actions.moveBeat(dragPayload.sceneId, dragPayload.beatId, targetIndex);
-    }
-  }
-
-  dragPayload = null;
-}
-
-function handleDragLeave(event) {
-  event.currentTarget.classList.remove('is-drop-target');
-}
+const rightResizer = document.createElement('div');
+rightResizer.className = 'panel-resizer panel-resizer-right';
+layoutRoot.insertBefore(rightResizer, assistantPanel);
 
 function createElement(tag, className, textContent) {
   const element = document.createElement(tag);
@@ -2440,6 +2500,358 @@ function createElement(tag, className, textContent) {
     element.textContent = textContent;
   }
   return element;
+}
+
+function clampNumber(value, min, max, fallback) {
+  if (!Number.isFinite(value)) {
+    return Number.isFinite(fallback) ? fallback : min;
+  }
+  return Math.min(max, Math.max(min, value));
+}
+
+function clampSidebarWidth(side, value) {
+  const limits = SIDEBAR_LIMITS[side];
+  const fallback = DEFAULT_SIDEBAR_WIDTHS[side];
+  if (!limits) {
+    return Number.isFinite(value) ? value : fallback;
+  }
+  return clampNumber(value, limits.min, limits.max, fallback);
+}
+
+function normalizeSidebarWidths(input = {}) {
+  return {
+    left: clampSidebarWidth('left', input.left),
+    right: clampSidebarWidth('right', input.right)
+  };
+}
+
+function getSidebarWidthsSnapshot(sourceState = state) {
+  if (!sourceState || !sourceState.ui || !sourceState.ui.layout) {
+    return { ...DEFAULT_SIDEBAR_WIDTHS };
+  }
+  const widths = sourceState.ui.layout.sidebarWidths || {};
+  return normalizeSidebarWidths(widths);
+}
+
+let layoutPreviewWidths = null;
+let resizeSession = null;
+
+function computeCenterWidth(totalWidth, leftWidth, rightWidth) {
+  return totalWidth - leftWidth - rightWidth - LAYOUT_RESIZER_COUNT * LAYOUT_RESIZER_WIDTH;
+}
+
+function applyLayoutWidths(previewWidths = null) {
+  if (!layoutRoot || !outlinePanel || !mainPanel || !assistantPanel) {
+    return;
+  }
+  const activeWidths =
+    previewWidths !== null
+      ? normalizeSidebarWidths(previewWidths)
+      : layoutPreviewWidths !== null
+        ? normalizeSidebarWidths(layoutPreviewWidths)
+        : getSidebarWidthsSnapshot();
+  outlinePanel.style.flex = `0 0 ${activeWidths.left}px`;
+  outlinePanel.style.width = `${activeWidths.left}px`;
+  outlinePanel.style.minWidth = `${SIDEBAR_LIMITS.left.min}px`;
+
+  assistantPanel.style.flex = `0 0 ${activeWidths.right}px`;
+  assistantPanel.style.width = `${activeWidths.right}px`;
+  assistantPanel.style.minWidth = `${SIDEBAR_LIMITS.right.min}px`;
+
+  mainPanel.style.flex = '1 1 auto';
+  mainPanel.style.minWidth = `${SIDEBAR_LIMITS.centerMin}px`;
+}
+
+function setupSidebarResizers() {
+  if (!leftResizer || !rightResizer) {
+    return;
+  }
+
+  const startResize = (side, event) => {
+    if (event && event.button !== undefined && event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const widths = getSidebarWidthsSnapshot();
+    const layoutBox = layoutRoot.getBoundingClientRect();
+    resizeSession = {
+      side,
+      startX: event.clientX,
+      widthsAtStart: widths,
+      layoutWidth: layoutBox.width
+    };
+    layoutPreviewWidths = { ...widths };
+    layoutRoot.classList.add('is-resizing');
+    document.body.classList.add('is-resizing');
+    if (side === 'left') {
+      leftResizer.classList.add('is-active');
+    } else {
+      rightResizer.classList.add('is-active');
+    }
+    window.addEventListener('pointermove', handleResizeMove);
+    window.addEventListener('pointerup', handleResizeEnd);
+    window.addEventListener('pointercancel', handleResizeEnd);
+  };
+
+  leftResizer.addEventListener('pointerdown', (event) => startResize('left', event));
+  rightResizer.addEventListener('pointerdown', (event) => startResize('right', event));
+}
+
+function handleResizeMove(event) {
+  if (!resizeSession) {
+    return;
+  }
+  event.preventDefault();
+  const delta = event.clientX - resizeSession.startX;
+  const nextWidths = { ...resizeSession.widthsAtStart };
+  const totalWidth = resizeSession.layoutWidth;
+  if (resizeSession.side === 'left') {
+    let candidate = clampSidebarWidth('left', resizeSession.widthsAtStart.left + delta);
+    const maxLeft =
+      totalWidth - resizeSession.widthsAtStart.right - SIDEBAR_LIMITS.centerMin - LAYOUT_RESIZER_COUNT * LAYOUT_RESIZER_WIDTH;
+    if (maxLeft >= SIDEBAR_LIMITS.left.min) {
+      candidate = Math.min(candidate, maxLeft);
+    }
+    nextWidths.left = clampSidebarWidth('left', candidate);
+  } else {
+    let candidate = clampSidebarWidth('right', resizeSession.widthsAtStart.right - delta);
+    const maxRight =
+      totalWidth - resizeSession.widthsAtStart.left - SIDEBAR_LIMITS.centerMin - LAYOUT_RESIZER_COUNT * LAYOUT_RESIZER_WIDTH;
+    if (maxRight >= SIDEBAR_LIMITS.right.min) {
+      candidate = Math.min(candidate, maxRight);
+    }
+    nextWidths.right = clampSidebarWidth('right', candidate);
+  }
+
+  let centerWidth = computeCenterWidth(totalWidth, nextWidths.left, nextWidths.right);
+  if (centerWidth < SIDEBAR_LIMITS.centerMin) {
+    if (resizeSession.side === 'left') {
+      const maxLeft =
+        totalWidth -
+        nextWidths.right -
+        SIDEBAR_LIMITS.centerMin -
+        LAYOUT_RESIZER_COUNT * LAYOUT_RESIZER_WIDTH;
+      nextWidths.left = clampSidebarWidth('left', maxLeft);
+    } else {
+      const maxRight =
+        totalWidth -
+        nextWidths.left -
+        SIDEBAR_LIMITS.centerMin -
+        LAYOUT_RESIZER_COUNT * LAYOUT_RESIZER_WIDTH;
+      nextWidths.right = clampSidebarWidth('right', maxRight);
+    }
+    centerWidth = computeCenterWidth(totalWidth, nextWidths.left, nextWidths.right);
+    if (centerWidth < SIDEBAR_LIMITS.centerMin) {
+      nextWidths.left = resizeSession.widthsAtStart.left;
+      nextWidths.right = resizeSession.widthsAtStart.right;
+    }
+  }
+
+  layoutPreviewWidths = nextWidths;
+  applyLayoutWidths(nextWidths);
+}
+
+function handleResizeEnd(event) {
+  if (!resizeSession) {
+    return;
+  }
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  window.removeEventListener('pointermove', handleResizeMove);
+  window.removeEventListener('pointerup', handleResizeEnd);
+  window.removeEventListener('pointercancel', handleResizeEnd);
+  layoutRoot.classList.remove('is-resizing');
+  document.body.classList.remove('is-resizing');
+  leftResizer.classList.remove('is-active');
+  rightResizer.classList.remove('is-active');
+  const finalWidths = layoutPreviewWidths ? normalizeSidebarWidths(layoutPreviewWidths) : resizeSession.widthsAtStart;
+  resizeSession = null;
+  layoutPreviewWidths = null;
+  applyLayoutWidths(finalWidths);
+  actions.setSidebarWidths(finalWidths);
+}
+
+function normalizeMentionKey(value) {
+  if (!value || typeof value !== 'string') {
+    return '';
+  }
+  return value.replace(/^@/, '').replace(/[^a-z0-9]+/gi, '').toLowerCase();
+}
+
+function buildCodexMentionMap(entries) {
+  const map = new Map();
+  if (!entries) {
+    return map;
+  }
+  Object.values(entries).forEach((entry) => {
+    if (!entry || !entry.id || !entry.name) {
+      return;
+    }
+    const key = normalizeMentionKey(entry.name);
+    if (key && !map.has(key)) {
+      map.set(key, entry.id);
+    }
+  });
+  return map;
+}
+
+function computeEntryDerivedData(entry, mentionMap) {
+  if (!entry) {
+    return;
+  }
+  const mentionKeys = new Set();
+  const relationsMap = new Map();
+  const nameKey = normalizeMentionKey(entry.name);
+  if (nameKey) {
+    mentionKeys.add(nameKey);
+  }
+
+  const collect = (text, context) => {
+    if (typeof text !== 'string' || text.trim().length === 0) {
+      return 0;
+    }
+    const mentions = extractMentionsFromText(text);
+    mentions.forEach((mention) => {
+      const key = normalizeMentionKey(mention);
+      if (!key) {
+        return;
+      }
+      mentionKeys.add(key);
+      const targetId = mentionMap.get(key);
+      if (!targetId || targetId === entry.id) {
+        return;
+      }
+      let relation = relationsMap.get(targetId);
+      if (!relation) {
+        relation = { targetId, sources: [] };
+        relationsMap.set(targetId, relation);
+      }
+      relation.sources.push(context);
+    });
+    return Math.max(1, mentions.length);
+  };
+
+  let mentionCount = 0;
+
+  mentionCount += collect(entry.summary || '', { kind: 'summary' });
+
+  if (Array.isArray(entry.details)) {
+    entry.details.forEach((detail) => {
+      mentionCount += collect(detail?.text || '', {
+        kind: 'detail',
+        detailId: detail?.id || null,
+        sceneId: detail?.sourceSceneId || null,
+        beatId: detail?.sourceBeatId || null
+      });
+    });
+  }
+
+  if (entry.category === 'character') {
+    if (entry.background && typeof entry.background === 'object') {
+      Object.entries(entry.background).forEach(([field, value]) => {
+        mentionCount += collect(value || '', { kind: 'background', field });
+      });
+    }
+    if (entry.core && typeof entry.core === 'object') {
+      Object.entries(entry.core).forEach(([sectionKey, items]) => {
+        if (!Array.isArray(items)) {
+          return;
+        }
+        items.forEach((item) => {
+          mentionCount += collect(item?.text || '', {
+            kind: 'core',
+            section: sectionKey,
+            itemId: item?.id || null
+          });
+        });
+      });
+    }
+  }
+
+  entry.relations = Array.from(relationsMap.values());
+  const stats = entry.stats && typeof entry.stats === 'object' ? entry.stats : {};
+  stats.mentionCount = mentionCount;
+  stats.mentionKeys = Array.from(mentionKeys);
+  entry.stats = stats;
+}
+
+function updateAllCodexRelations(entries) {
+  if (!entries) {
+    return;
+  }
+  const mentionMap = buildCodexMentionMap(entries);
+  Object.values(entries).forEach((entry) => computeEntryDerivedData(entry, mentionMap));
+  const inbound = new Map();
+  Object.values(entries).forEach((entry) => {
+    if (!entry || !Array.isArray(entry.relations)) {
+      return;
+    }
+    entry.relations.forEach((relation) => {
+      const targetId = relation && relation.targetId;
+      if (!targetId || !entries[targetId]) {
+        return;
+      }
+      if (!inbound.has(targetId)) {
+        inbound.set(targetId, []);
+      }
+      inbound.get(targetId).push({ sourceId: entry.id, sources: relation.sources || [] });
+    });
+  });
+  Object.entries(entries).forEach(([entryId, entry]) => {
+    const list = inbound.get(entryId);
+    if (list && list.length > 0) {
+      entry.relatedBy = list;
+    } else if (entry && entry.relatedBy) {
+      delete entry.relatedBy;
+    }
+  });
+}
+
+function refreshCodexDerivedData(draft) {
+  if (!draft || !draft.codex || !draft.codex.entries) {
+    return;
+  }
+  updateAllCodexRelations(draft.codex.entries);
+}
+
+function parseCodexSearchTokens(input) {
+  if (typeof input !== 'string') {
+    return [];
+  }
+  return input
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0)
+    .map((token) => (token.startsWith('@') ? token : `@${token}`))
+    .map((token) => normalizeMentionKey(token))
+    .filter(Boolean);
+}
+
+function createReorderButton(direction, title, disabled, onClick) {
+  const symbol = direction === 'up' ? '▲' : '▼';
+  const button = createElement('button', 'outline-reorder-button', symbol);
+  button.title = title;
+  button.disabled = disabled;
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    onClick();
+  });
+  button.addEventListener('mousedown', (event) => event.stopPropagation());
+  return button;
+}
+
+function createReorderStack({ disableUp, disableDown, onUp, onDown }) {
+  const stack = createElement('div', 'outline-reorder-stack');
+  stack.appendChild(
+    createReorderButton('up', 'Move up', disableUp, onUp)
+  );
+  stack.appendChild(
+    createReorderButton('down', 'Move down', disableDown, onDown)
+  );
+  return stack;
 }
 
 function renderHeaderActions() {
@@ -2663,7 +3075,7 @@ function renderSettings() {
   settingsRoot.appendChild(modal);
 }
 
-function renderOutline() {
+function renderSidebar() {
   outlineRoot.innerHTML = '';
   if (!outlineRoot.classList.contains('outline-board')) {
     outlineRoot.classList.add('outline-board');
@@ -2674,41 +3086,107 @@ function renderOutline() {
     return;
   }
 
+  const sidebarView = state.ui.sidebarView === 'codex' ? 'codex' : 'outline';
   const outlineUi = state.ui.outline || { collapsedActs: [], collapsedChapters: [], expandedScenes: [] };
+  const searchTokens = parseCodexSearchTokens(state.ui.codexSearch);
 
   const header = createElement('div', 'outline-header');
+  const headerLeft = createElement('div', 'outline-header-left');
   const titleWrapper = document.createElement('div');
-  const title = createElement('h2', 'outline-title', 'Outline');
-  const subtitle = createElement('p', 'outline-subtitle', 'Acts, chapters, and scenes organised hierarchically.');
-  titleWrapper.appendChild(title);
-  titleWrapper.appendChild(subtitle);
-  const addActButton = createElement('button', 'button-accent', '+ Act');
-  addActButton.addEventListener('click', () => actions.addAct());
-  header.appendChild(titleWrapper);
-  header.appendChild(addActButton);
+  const titleText = sidebarView === 'codex' ? 'Codex' : 'Outline';
+  const subtitleText = sidebarView === 'codex'
+    ? 'Browse Codex entries and quick-jump to reference cards.'
+    : 'Acts, chapters, and scenes organised hierarchically.';
+  titleWrapper.appendChild(createElement('h2', 'outline-title', titleText));
+  titleWrapper.appendChild(createElement('p', 'outline-subtitle', subtitleText));
+  headerLeft.appendChild(titleWrapper);
+
+  const tabRow = createElement('div', 'sidebar-tabs');
+  const outlineTab = createElement(
+    'button',
+    `sidebar-tab${sidebarView === 'outline' ? ' is-active' : ''}`,
+    'Outline'
+  );
+  outlineTab.addEventListener('click', () => actions.setSidebarView('outline'));
+  const codexTab = createElement(
+    'button',
+    `sidebar-tab${sidebarView === 'codex' ? ' is-active' : ''}`,
+    'Codex'
+  );
+  codexTab.addEventListener('click', () => actions.setSidebarView('codex'));
+  tabRow.appendChild(outlineTab);
+  tabRow.appendChild(codexTab);
+  headerLeft.appendChild(tabRow);
+
+  header.appendChild(headerLeft);
+
+  const headerActions = createElement('div', 'outline-header-actions');
+  if (sidebarView === 'outline') {
+    const addActButton = createElement('button', 'button-accent', '+ Act');
+    addActButton.addEventListener('click', () => actions.addAct());
+    headerActions.appendChild(addActButton);
+  } else {
+    const searchWrapper = createElement('div', 'codex-search codex-search--sidebar');
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.className = 'codex-search-input';
+    searchInput.placeholder = 'Search @mentions…';
+    searchInput.value = state.ui.codexSearch || '';
+    searchInput.addEventListener('input', (event) => actions.setCodexSearch(event.target.value));
+    searchWrapper.appendChild(searchInput);
+    if ((state.ui.codexSearch || '').length > 0) {
+      const clearButton = createElement('button', 'codex-search-clear', '\u00D7');
+      clearButton.type = 'button';
+      clearButton.addEventListener('click', () => actions.setCodexSearch(''));
+      searchWrapper.appendChild(clearButton);
+    }
+    headerActions.appendChild(searchWrapper);
+
+    const addEntryButton = createElement('button', 'button-outline', '+ Entry');
+    addEntryButton.addEventListener('click', () => {
+      const name = window.prompt('New Codex entry name');
+      if (!name) {
+        return;
+      }
+      const categoryInput = window.prompt('Entry category (character, place, item, lore)', 'character');
+      actions.addCodexEntry(name, categoryInput || 'character');
+    });
+    headerActions.appendChild(addEntryButton);
+  }
+  if (headerActions.childElementCount > 0) {
+    header.appendChild(headerActions);
+  }
+
   outlineRoot.appendChild(header);
 
+  if (sidebarView === 'outline') {
+    outlineRoot.appendChild(buildOutlineSidebarContent(outlineUi));
+  } else {
+    const codexScroll = createElement('div', 'outline-scroll');
+    codexScroll.appendChild(
+      createCodexSidebarElement({
+        tag: 'div',
+        className: 'sidebar-codex',
+        emptyClassName: 'codex-empty',
+        entryButtonClass: 'codex-entry-button',
+        searchTokens
+      })
+    );
+    outlineRoot.appendChild(codexScroll);
+  }
+}
+
+function buildOutlineSidebarContent(outlineUi) {
   const scrollRegion = createElement('div', 'outline-scroll');
 
-  if (state.acts.length === 0) {
+  if (!state || state.acts.length === 0) {
     scrollRegion.appendChild(createElement('div', 'outline-empty', 'Start by creating an act for your story.'));
-    outlineRoot.appendChild(scrollRegion);
-    return;
+    return scrollRegion;
   }
 
   const sortedActs = [...state.acts].sort((a, b) => a.order - b.order);
-  sortedActs.forEach((act) => {
+  sortedActs.forEach((act, actIndex) => {
     const actContainer = createElement('div', 'outline-act');
-    actContainer.draggable = true;
-    actContainer.dataset.dragType = 'act';
-    actContainer.dataset.actId = act.id;
-    actContainer.dataset.dropType = 'act';
-    actContainer.addEventListener('dragstart', handleDragStart);
-    actContainer.addEventListener('dragend', handleDragEnd);
-    actContainer.addEventListener('dragenter', handleDragOver);
-    actContainer.addEventListener('dragover', handleDragOver);
-    actContainer.addEventListener('drop', handleDrop);
-    actContainer.addEventListener('dragleave', handleDragLeave);
     const actCollapsed = outlineUi.collapsedActs.includes(act.id);
     if (actCollapsed) {
       actContainer.classList.add('is-collapsed');
@@ -2723,16 +3201,27 @@ function renderOutline() {
       actions.toggleActCollapse(act.id);
     });
     actTitleRow.appendChild(actToggle);
+    const actReorder = createReorderStack({
+      disableUp: actIndex === 0,
+      disableDown: actIndex === sortedActs.length - 1,
+      onUp: () => actions.shiftAct(act.id, -1),
+      onDown: () => actions.shiftAct(act.id, 1)
+    });
+    actTitleRow.appendChild(actReorder);
     actTitleRow.appendChild(createElement('h3', 'outline-act-title', `Act ${act.order}: ${act.title}`));
+
+    const actActions = createElement('div', 'outline-item-actions');
     const renameActButton = createElement('button', 'button-icon', '✎');
     renameActButton.title = 'Rename act';
-    renameActButton.addEventListener('click', () => {
+    renameActButton.addEventListener('click', (event) => {
+      event.stopPropagation();
       const nextTitle = window.prompt('Rename act', act.title);
       if (nextTitle !== null) {
         actions.renameAct(act.id, nextTitle);
       }
     });
-    actTitleRow.appendChild(renameActButton);
+    actActions.appendChild(renameActButton);
+
     const deleteActButton = createElement('button', 'button-icon button-icon-danger', '🗑');
     deleteActButton.title = 'Delete act';
     deleteActButton.addEventListener('click', (event) => {
@@ -2743,7 +3232,9 @@ function renderOutline() {
       }
     });
     deleteActButton.addEventListener('mousedown', (event) => event.stopPropagation());
-    actTitleRow.appendChild(deleteActButton);
+    actActions.appendChild(deleteActButton);
+
+    actTitleRow.appendChild(actActions);
     actHeaderText.appendChild(actTitleRow);
     actHeaderText.appendChild(
       createElement(
@@ -2752,10 +3243,12 @@ function renderOutline() {
         `${act.chapterIds.length} ${act.chapterIds.length === 1 ? 'chapter' : 'chapters'}`
       )
     );
+    actHeader.appendChild(actHeaderText);
+
     const addChapterButton = createElement('button', 'button-outline', '+ Chapter');
     addChapterButton.addEventListener('click', () => actions.addChapter(act.id));
-    actHeader.appendChild(actHeaderText);
     actHeader.appendChild(addChapterButton);
+
     actContainer.appendChild(actHeader);
 
     if (actCollapsed) {
@@ -2764,38 +3257,21 @@ function renderOutline() {
     }
 
     const chapterList = createElement('div', 'outline-chapter-list');
-    chapterList.dataset.dropType = 'chapter-end';
-    chapterList.dataset.actId = act.id;
-    chapterList.addEventListener('dragenter', handleDragOver);
-    chapterList.addEventListener('dragover', handleDragOver);
-    chapterList.addEventListener('drop', handleDrop);
-    chapterList.addEventListener('dragleave', handleDragLeave);
     if (act.chapterIds.length === 0) {
       chapterList.appendChild(createElement('div', 'outline-empty', 'No chapters in this act.'));
     } else {
-      act.chapterIds.forEach((chapterId) => {
+      act.chapterIds.forEach((chapterId, chapterIndex) => {
         const chapter = state.chapters[chapterId];
         if (!chapter) {
           return;
         }
         const chapterContainer = createElement('div', 'outline-chapter');
-        chapterContainer.draggable = true;
-        chapterContainer.dataset.dragType = 'chapter';
-        chapterContainer.dataset.chapterId = chapter.id;
-        chapterContainer.dataset.actId = act.id;
-        chapterContainer.dataset.dropType = 'chapter';
-        chapterContainer.addEventListener('dragstart', handleDragStart);
-        chapterContainer.addEventListener('dragend', handleDragEnd);
-        chapterContainer.addEventListener('dragenter', handleDragOver);
-        chapterContainer.addEventListener('dragover', handleDragOver);
-        chapterContainer.addEventListener('drop', handleDrop);
-        chapterContainer.addEventListener('dragleave', handleDragLeave);
-        const chapterHeader = createElement('div', 'outline-chapter-header');
-        const chapterTitleRow = createElement('div', 'outline-chapter-title-row');
         const chapterCollapsed = outlineUi.collapsedChapters.includes(chapter.id);
         if (chapterCollapsed) {
           chapterContainer.classList.add('is-collapsed');
         }
+        const chapterHeader = createElement('div', 'outline-chapter-header');
+        const chapterTitleRow = createElement('div', 'outline-chapter-title-row');
         const chapterToggle = createElement('button', 'outline-collapse-button', chapterCollapsed ? '▸' : '▾');
         chapterToggle.title = chapterCollapsed ? 'Expand chapter' : 'Collapse chapter';
         chapterToggle.addEventListener('click', (event) => {
@@ -2803,18 +3279,34 @@ function renderOutline() {
           actions.toggleChapterCollapse(chapter.id);
         });
         chapterTitleRow.appendChild(chapterToggle);
-        chapterTitleRow.appendChild(
-          createElement('h4', 'outline-chapter-title', `Chapter ${chapter.order}: ${chapter.title}`)
+
+        const chapterReorder = createReorderStack({
+          disableUp: chapterIndex === 0,
+          disableDown: chapterIndex === act.chapterIds.length - 1,
+          onUp: () => actions.shiftChapter(chapter.id, -1),
+          onDown: () => actions.shiftChapter(chapter.id, 1)
+        });
+        chapterTitleRow.appendChild(chapterReorder);
+
+        const chapterTitleChip = createElement(
+          'span',
+          'outline-chapter-chip',
+          `Ch. ${chapter.order}: ${chapter.title}`
         );
+        chapterTitleRow.appendChild(chapterTitleChip);
+
+        const chapterActions = createElement('div', 'outline-item-actions');
         const renameChapterButton = createElement('button', 'button-icon', '✎');
         renameChapterButton.title = 'Rename chapter';
-        renameChapterButton.addEventListener('click', () => {
+        renameChapterButton.addEventListener('click', (event) => {
+          event.stopPropagation();
           const nextTitle = window.prompt('Rename chapter', chapter.title);
           if (nextTitle !== null) {
             actions.renameChapter(chapter.id, nextTitle);
           }
         });
-        chapterTitleRow.appendChild(renameChapterButton);
+        chapterActions.appendChild(renameChapterButton);
+
         const deleteChapterButton = createElement('button', 'button-icon button-icon-danger', '🗑');
         deleteChapterButton.title = 'Delete chapter';
         deleteChapterButton.addEventListener('click', (event) => {
@@ -2827,8 +3319,11 @@ function renderOutline() {
           }
         });
         deleteChapterButton.addEventListener('mousedown', (event) => event.stopPropagation());
-        chapterTitleRow.appendChild(deleteChapterButton);
+        chapterActions.appendChild(deleteChapterButton);
+
+        chapterTitleRow.appendChild(chapterActions);
         chapterHeader.appendChild(chapterTitleRow);
+
         const addSceneButton = createElement('button', 'button-outline', '+ Scene');
         addSceneButton.addEventListener('click', () => actions.addScene(chapter.id));
         chapterHeader.appendChild(addSceneButton);
@@ -2840,34 +3335,17 @@ function renderOutline() {
         }
 
         const sceneList = createElement('ul', 'outline-scene-list');
-        sceneList.dataset.dropType = 'scene-end';
-        sceneList.dataset.chapterId = chapter.id;
-        sceneList.addEventListener('dragenter', handleDragOver);
-        sceneList.addEventListener('dragover', handleDragOver);
-        sceneList.addEventListener('drop', handleDrop);
-        sceneList.addEventListener('dragleave', handleDragLeave);
         if (chapter.sceneIds.length === 0) {
           const emptyItem = createElement('li', 'outline-empty', 'No scenes yet. Add one to start writing.');
           sceneList.appendChild(emptyItem);
         } else {
-          chapter.sceneIds.forEach((sceneId) => {
+          chapter.sceneIds.forEach((sceneId, sceneIndex) => {
             const scene = state.scenes[sceneId];
             if (!scene) {
               return;
             }
             const listItem = document.createElement('li');
             listItem.className = 'outline-scene-item';
-            listItem.draggable = true;
-            listItem.dataset.dragType = 'scene';
-            listItem.dataset.sceneId = scene.id;
-            listItem.dataset.chapterId = chapter.id;
-            listItem.dataset.dropType = 'scene';
-            listItem.addEventListener('dragstart', handleDragStart);
-            listItem.addEventListener('dragend', handleDragEnd);
-            listItem.addEventListener('dragenter', handleDragOver);
-            listItem.addEventListener('dragover', handleDragOver);
-            listItem.addEventListener('drop', handleDrop);
-            listItem.addEventListener('dragleave', handleDragLeave);
             const sceneExpanded = outlineUi.expandedScenes.includes(scene.id);
             if (sceneExpanded) {
               listItem.classList.add('is-expanded');
@@ -2885,20 +3363,33 @@ function renderOutline() {
             });
             sceneToggle.addEventListener('mousedown', (event) => event.stopPropagation());
             sceneRow.appendChild(sceneToggle);
-            const button = createElement(
+
+            const sceneReorder = createReorderStack({
+              disableUp: sceneIndex === 0,
+              disableDown: sceneIndex === chapter.sceneIds.length - 1,
+              onUp: () => actions.shiftScene(scene.id, -1),
+              onDown: () => actions.shiftScene(scene.id, 1)
+            });
+            sceneRow.appendChild(sceneReorder);
+
+            const sceneButton = createElement(
               'button',
               `scene-button${state.selectedSceneId === scene.id ? ' is-active' : ''}`
             );
+            sceneButton.addEventListener('click', () => actions.selectScene(scene.id));
             const buttonBody = createElement('div', 'scene-button-body');
-            const buttonTitle = createElement('p', 'scene-button-title', scene.title);
-            const buttonMeta = createElement(
-              'p',
-              'scene-button-meta',
-              `${scene.wordCount} ${scene.wordCount === 1 ? 'word' : 'words'} · ${scene.draftStatus}`
+            buttonBody.appendChild(createElement('p', 'scene-button-title', formatSceneHeading(scene, sceneIndex)));
+            buttonBody.appendChild(
+              createElement(
+                'p',
+                'scene-button-meta',
+                `${scene.wordCount} ${scene.wordCount === 1 ? 'word' : 'words'} · ${scene.draftStatus}`
+              )
             );
-            buttonBody.appendChild(buttonTitle);
-            buttonBody.appendChild(buttonMeta);
-            button.appendChild(buttonBody);
+            sceneButton.appendChild(buttonBody);
+            sceneRow.appendChild(sceneButton);
+
+            const sceneActions = createElement('div', 'outline-item-actions scene-actions');
             const renameScene = createElement('button', 'button-icon scene-rename', '✎');
             renameScene.title = 'Rename scene';
             renameScene.addEventListener('click', (event) => {
@@ -2908,9 +3399,8 @@ function renderOutline() {
                 actions.renameScene(scene.id, nextTitle);
               }
             });
-            button.appendChild(renameScene);
-            button.addEventListener('click', () => actions.selectScene(scene.id));
-            sceneRow.appendChild(button);
+            sceneActions.appendChild(renameScene);
+
             const deleteSceneButton = createElement('button', 'button-icon button-icon-danger scene-delete', '🗑');
             deleteSceneButton.title = 'Delete scene';
             deleteSceneButton.addEventListener('click', (event) => {
@@ -2921,8 +3411,11 @@ function renderOutline() {
               }
             });
             deleteSceneButton.addEventListener('mousedown', (event) => event.stopPropagation());
-            sceneRow.appendChild(deleteSceneButton);
+            sceneActions.appendChild(deleteSceneButton);
+
+            sceneRow.appendChild(sceneActions);
             listItem.appendChild(sceneRow);
+
             if (sceneExpanded && Array.isArray(scene.beats) && scene.beats.length > 0) {
               const beatPreview = createElement('ul', 'scene-beat-preview');
               scene.beats
@@ -2940,6 +3433,7 @@ function renderOutline() {
             } else if (sceneExpanded) {
               listItem.appendChild(createElement('p', 'scene-beat-empty', 'No beats yet.'));
             }
+
             sceneList.appendChild(listItem);
           });
         }
@@ -2953,17 +3447,8 @@ function renderOutline() {
     scrollRegion.appendChild(actContainer);
   });
 
-  const actDropTail = createElement('div', 'outline-drop-zone outline-drop-zone-act');
-  actDropTail.dataset.dropType = 'act-end';
-  actDropTail.addEventListener('dragenter', handleDragOver);
-  actDropTail.addEventListener('dragover', handleDragOver);
-  actDropTail.addEventListener('drop', handleDrop);
-  actDropTail.addEventListener('dragleave', handleDragLeave);
-  scrollRegion.appendChild(actDropTail);
-
-  outlineRoot.appendChild(scrollRegion);
+  return scrollRegion;
 }
-
 function renderMainView() {
   if (!state) {
     if (mainRoot) {
@@ -3004,7 +3489,11 @@ function renderWorkspace() {
   const headerLeft = createElement('div', 'workspace-header-left');
   const breadcrumb = createElement('div', 'workspace-breadcrumb');
   const locationLabel = createElement('span', 'workspace-breadcrumb-label', 'Scene');
-  const locationValue = createElement('span', 'workspace-breadcrumb-value', selectedScene.title);
+  const locationValue = createElement(
+    'span',
+    'workspace-breadcrumb-value',
+    formatSceneHeading(selectedScene)
+  );
   breadcrumb.appendChild(locationLabel);
   breadcrumb.appendChild(locationValue);
   const hierarchy = createSceneLocation(selectedScene);
@@ -3022,9 +3511,11 @@ function renderWorkspace() {
     `${beatCount} ${beatCount === 1 ? 'beat' : 'beats'}`
   );
   const statStatus = createElement('p', 'workspace-stat workspace-stat-status', selectedScene.draftStatus);
+  const statUpdated = createElement('p', 'workspace-stat workspace-stat-updated', formatUpdatedAt(selectedScene.lastUpdated));
   stats.appendChild(statWords);
   stats.appendChild(statBeats);
   stats.appendChild(statStatus);
+  stats.appendChild(statUpdated);
   headerLeft.appendChild(stats);
 
   const headerRight = createElement('div', 'workspace-header-right');
@@ -3071,6 +3562,19 @@ function renderWorkspace() {
     scanQuickButton.title = 'Add an API key for the Codex provider in Settings to enable scene scanning.';
   }
   quickActions.appendChild(scanQuickButton);
+
+  const scanStatusState = state.ui.scanStatus && state.ui.scanStatus.sceneId === selectedScene.id ? state.ui.scanStatus : null;
+  const forceExpandScanStatus = Boolean(scanStatusState && scanStatusState.state === 'running');
+  const isScanCollapsed = !forceExpandScanStatus && Boolean(state.ui.sceneScanCollapsed && state.ui.sceneScanCollapsed[selectedScene.id]);
+  const scanToggleLabel = isScanCollapsed ? 'Show status' : 'Hide status';
+  const scanToggleButton = createQuickActionButton(scanToggleLabel, () => actions.toggleSceneScanCollapse(selectedScene.id));
+  scanToggleButton.title = isScanCollapsed ? 'Show scene scan summary panel' : 'Hide scene scan summary panel';
+  if (forceExpandScanStatus) {
+    scanToggleButton.disabled = true;
+    scanToggleButton.textContent = 'Scanning…';
+    scanToggleButton.title = 'Scene status visible while scanning';
+  }
+  quickActions.appendChild(scanToggleButton);
   headerRight.appendChild(quickActions);
 
   header.appendChild(headerLeft);
@@ -3088,6 +3592,7 @@ function renderWorkspace() {
     statWords.textContent = `${latestScene.wordCount} words`;
     statBeats.textContent = `${latestBeatCount} ${latestBeatCount === 1 ? 'beat' : 'beats'}`;
     statStatus.textContent = latestScene.draftStatus;
+    statUpdated.textContent = formatUpdatedAt(latestScene.lastUpdated);
   };
 
   if (state.ui.showBeats) {
@@ -3103,23 +3608,16 @@ function renderWorkspace() {
       statWords.textContent = `${latestScene.wordCount} words`;
       statBeats.textContent = `${latestBeatCount} ${latestBeatCount === 1 ? 'beat' : 'beats'}`;
       statStatus.textContent = latestScene.draftStatus;
+      statUpdated.textContent = formatUpdatedAt(latestScene.lastUpdated);
     };
   } else {
     const editor = createElement('div', 'workspace-editor');
-    const editorHeader = createElement('div', 'editor-header');
-    editorHeader.appendChild(createElement('h2', 'editor-title', selectedScene.title));
-    const editorMeta = createElement('p', 'editor-meta', createSceneSummary(selectedScene));
-    const editorUpdated = createElement('p', 'editor-updated', formatUpdatedAt(selectedScene.lastUpdated));
-    editorHeader.appendChild(editorMeta);
-    editorHeader.appendChild(editorUpdated);
-    editor.appendChild(editorHeader);
-
     const textPanel = createElement('div', 'editor-panel');
-    textPanel.appendChild(createElement('label', 'editor-label', 'Scene text'));
     const textarea = document.createElement('textarea');
     textarea.className = 'workspace-textarea';
     textarea.value = selectedScene.text;
     textarea.placeholder = 'Draft your scene here...';
+    textarea.setAttribute('aria-label', 'Scene text');
 
     const syncFocus = () => {
       markEditorFocus(
@@ -3139,8 +3637,7 @@ function renderWorkspace() {
       statWords.textContent = `${latestScene.wordCount} words`;
       statBeats.textContent = `${latestBeatCount} ${latestBeatCount === 1 ? 'beat' : 'beats'}`;
       statStatus.textContent = latestScene.draftStatus;
-      editorMeta.textContent = createSceneSummary(latestScene);
-      editorUpdated.textContent = formatUpdatedAt(latestScene.lastUpdated);
+      statUpdated.textContent = formatUpdatedAt(latestScene.lastUpdated);
     };
 
     textarea.addEventListener('input', (event) => {
@@ -3180,7 +3677,9 @@ function renderWorkspace() {
     editorTextarea = textarea;
   }
 
-  body.appendChild(renderSceneScanStatus(selectedScene));
+  if (!isScanCollapsed || forceExpandScanStatus) {
+    body.appendChild(renderSceneScanStatus(selectedScene));
+  }
 
   shell.appendChild(body);
   root.appendChild(shell);
@@ -3197,18 +3696,53 @@ function createQuickActionButton(label, onClick) {
   return button;
 }
 
-function renderSceneScanStatus(scene) {
-  const block = createElement('div', 'scan-status');
-  block.appendChild(createElement('p', 'scan-status-title', 'Scene scan status'));
+function formatScanSummary(scene, activeStatus) {
+  if (activeStatus) {
+    if (activeStatus.state === 'running') {
+      return activeStatus.detail || activeStatus.message || 'Scanning in progress…';
+    }
+    if (activeStatus.state === 'error') {
+      return 'Scan failed';
+    }
+    const completedAt = activeStatus.completedAt
+      ? new Date(activeStatus.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : 'just now';
+    return `Last scan ${completedAt}`;
+  }
+  if (scene.lastScan) {
+    const completedAt = scene.lastScan.timestamp
+      ? new Date(scene.lastScan.timestamp).toLocaleDateString()
+      : 'recently';
+    return `Last scan ${completedAt}`;
+  }
+  return 'No scans yet';
+}
 
-  const status = state.ui.scanStatus;
-  if (!status || status.sceneId !== scene.id) {
+function renderSceneScanStatus(scene) {
+  const activeStatus = state.ui.scanStatus && state.ui.scanStatus.sceneId === scene.id ? state.ui.scanStatus : null;
+  const block = createElement('div', 'scan-status');
+  const header = createElement('div', 'scan-status-header');
+  const toggle = createElement('button', 'scan-status-toggle', '▾');
+  toggle.title = 'Collapse status panel';
+  if (activeStatus && activeStatus.state === 'running') {
+    toggle.disabled = true;
+    toggle.title = 'Scan in progress';
+  }
+  toggle.addEventListener('click', () => actions.toggleSceneScanCollapse(scene.id));
+  header.appendChild(toggle);
+  header.appendChild(createElement('span', 'scan-status-label', 'Scene scan status'));
+  header.appendChild(createElement('span', 'scan-status-summary', formatScanSummary(scene, activeStatus)));
+  block.appendChild(header);
+
+  const content = createElement('div', 'scan-status-content');
+
+  if (!activeStatus) {
     if (scene.lastScan) {
       const provider = AI_PROVIDERS.find((item) => item.id === scene.lastScan.providerId);
       const providerLabel = provider ? provider.label : scene.lastScan.providerId || 'Unknown provider';
       const completedAt = scene.lastScan.timestamp ? new Date(scene.lastScan.timestamp).toLocaleString() : 'Unknown time';
-      block.appendChild(createElement('p', 'scan-status-detail', `Last scan completed ${completedAt}.`));
-      block.appendChild(
+      content.appendChild(createElement('p', 'scan-status-detail', `Last scan completed ${completedAt}.`));
+      content.appendChild(
         createElement(
           'p',
           'scan-status-detail',
@@ -3216,61 +3750,65 @@ function renderSceneScanStatus(scene) {
         )
       );
       if (scene.lastScan.summary) {
-        block.appendChild(createElement('p', 'scan-status-detail', `Scene notes: ${scene.lastScan.summary}`));
+        content.appendChild(createElement('p', 'scan-status-detail', `Scene notes: ${scene.lastScan.summary}`));
       }
       if (Array.isArray(scene.lastScan.entries) && scene.lastScan.entries.length > 0) {
-        block.appendChild(
+        content.appendChild(
           createElement('p', 'scan-status-detail', `Affected codex entries: ${scene.lastScan.entries.join(', ')}`)
         );
       }
     } else {
-      block.appendChild(createElement('p', 'scan-status-detail', 'No scan has run for this scene yet.'));
-      block.appendChild(
+      content.appendChild(createElement('p', 'scan-status-detail', 'No scan has run for this scene yet.'));
+      content.appendChild(
         createElement('p', 'scan-status-detail', 'Use “Scan scene” to extract new Codex details from this draft.')
       );
     }
+    block.appendChild(content);
     return block;
   }
 
-  if (status.state === 'running') {
-    block.appendChild(
-      createElement('p', 'scan-status-detail', status.detail || status.message || 'Scanning in progress…')
+  if (activeStatus.state === 'running') {
+    content.appendChild(
+      createElement('p', 'scan-status-detail', activeStatus.detail || activeStatus.message || 'Scanning in progress…')
     );
-    if (status.step) {
-      block.appendChild(createElement('p', 'scan-status-detail', `Step: ${status.step}`));
+    if (activeStatus.step) {
+      content.appendChild(createElement('p', 'scan-status-detail', `Step: ${activeStatus.step}`));
     } else {
-      block.appendChild(createElement('p', 'scan-status-detail', 'Chunking scene and preparing Codex updates.'));
+      content.appendChild(createElement('p', 'scan-status-detail', 'Chunking scene and preparing Codex updates.'));
     }
+    block.appendChild(content);
     return block;
   }
 
-  if (status.state === 'error') {
-    block.appendChild(createElement('p', 'scan-status-detail', 'Scan failed.'));
-    block.appendChild(createElement('p', 'scan-status-detail', status.message || 'Unknown error.'));
+  if (activeStatus.state === 'error') {
+    content.appendChild(createElement('p', 'scan-status-detail', 'Scan failed.'));
+    content.appendChild(createElement('p', 'scan-status-detail', activeStatus.message || 'Unknown error.'));
     const retryButton = createElement('button', 'settings-secondary', 'Clear status');
     retryButton.addEventListener('click', () => actions.resetScanStatus());
     const actionsRow = createElement('div', 'settings-actions');
     actionsRow.appendChild(retryButton);
-    block.appendChild(actionsRow);
+    content.appendChild(actionsRow);
+    block.appendChild(content);
     return block;
   }
 
-  const providerId = status.providerId || getProviderId('codex');
+  const providerId = activeStatus.providerId || getProviderId('codex');
   const provider = AI_PROVIDERS.find((item) => item.id === providerId);
   const providerLabel = provider ? provider.label : providerId;
-  const completedAt = status.completedAt ? new Date(status.completedAt).toLocaleString() : 'just now';
-  block.appendChild(createElement('p', 'scan-status-detail', `Last scan completed ${completedAt}.`));
-  block.appendChild(createElement('p', 'scan-status-detail', `Provider: ${providerLabel}.`));
-  if (status.message) {
-    block.appendChild(createElement('p', 'scan-status-detail', status.message));
+  const completedAt = activeStatus.completedAt ? new Date(activeStatus.completedAt).toLocaleString() : 'just now';
+  content.appendChild(createElement('p', 'scan-status-detail', `Last scan completed ${completedAt}.`));
+  content.appendChild(createElement('p', 'scan-status-detail', `Provider: ${providerLabel}.`));
+  if (activeStatus.message) {
+    content.appendChild(createElement('p', 'scan-status-detail', activeStatus.message));
   }
 
   const resetButton = createElement('button', 'settings-secondary', 'Reset status');
   resetButton.addEventListener('click', () => actions.resetScanStatus());
   const actionsRow = createElement('div', 'settings-actions');
   actionsRow.appendChild(resetButton);
-  block.appendChild(actionsRow);
+  content.appendChild(actionsRow);
 
+  block.appendChild(content);
   return block;
 }
 
@@ -3292,7 +3830,7 @@ function buildOutlineSummary(appState) {
 
     chapters.forEach((chapter, chapterIndex) => {
       const chapterLabel = chapter?.order || chapterIndex + 1;
-      lines.push(`  Chapter ${chapterLabel} (${chapter?.id || 'C?'}): ${chapter?.title || 'Untitled Chapter'}`);
+      lines.push(`  Ch. ${chapterLabel} (${chapter?.id || 'C?'}): ${chapter?.title || 'Untitled Chapter'}`);
 
       const scenes = (chapter?.sceneIds || [])
         .map((sceneId) => appState.scenes[sceneId])
@@ -3612,56 +4150,17 @@ function groupCodexDetailsByScene(appState, details) {
     });
 }
 
-function buildBeatLookup(appState) {
-  const lookup = new Map();
-  if (!appState || !appState.scenes) {
-    return lookup;
-  }
-  Object.values(appState.scenes).forEach((scene) => {
-    if (!scene || !scene.id || !Array.isArray(scene.beats)) {
-      return;
-    }
-    scene.beats.forEach((beat, beatIndex) => {
-      if (!beat || !beat.id) {
-        return;
-      }
-      lookup.set(beat.id, {
-        sceneId: scene.id,
-        sceneTitle: scene.title || scene.id,
-        order: typeof beat.order === 'number' ? beat.order : beatIndex + 1,
-        title: beat.title || ''
-      });
-    });
-  });
-  return lookup;
-}
-
-function formatDetailMeta(appState, beatLookup, detail) {
+function formatDetailTag(detail) {
   if (!detail) {
     return null;
   }
   if (detail.sourceBeatId) {
-    const info = beatLookup.get(detail.sourceBeatId);
-    if (info) {
-      const parts = [];
-      if (info.order !== null && info.order !== undefined) {
-        parts.push(`Beat ${info.order}`);
-      }
-      if (info.title) {
-        parts.push(info.title);
-      }
-      const label = parts.length > 0 ? parts.join(' · ') : detail.sourceBeatId;
-      const sceneLabel = info.sceneTitle ? ` (${info.sceneTitle})` : '';
-      return `Linked to ${label}${sceneLabel}`;
-    }
-    return `Linked to beat ${detail.sourceBeatId}`;
+    return `[${detail.sourceBeatId}]`;
   }
   if (detail.sourceSceneId) {
-    const scene = appState && appState.scenes ? appState.scenes[detail.sourceSceneId] : null;
-    const sceneLabel = scene ? scene.title || detail.sourceSceneId : detail.sourceSceneId;
-    return sceneLabel ? `Linked to ${sceneLabel}` : null;
+    return `[${detail.sourceSceneId}]`;
   }
-  return 'General note';
+  return null;
 }
 
 function getSceneAndBeatOrder(draftState, beatId) {
@@ -4119,6 +4618,8 @@ function applyCodexUpdates(draft, sceneId, updates) {
     }
   });
 
+  updateAllCodexRelations(draft.codex.entries);
+
   return result;
 }
 
@@ -4137,12 +4638,6 @@ function renderBeatList(scene) {
   container.appendChild(header);
 
   const list = createElement('ul', 'beat-items');
-  list.dataset.dropType = 'beat-end';
-  list.dataset.sceneId = scene.id;
-  list.addEventListener('dragenter', handleDragOver);
-  list.addEventListener('dragover', handleDragOver);
-  list.addEventListener('drop', handleDrop);
-  list.addEventListener('dragleave', handleDragLeave);
   if (scene.beats.length === 0) {
     list.appendChild(
       createElement(
@@ -4152,21 +4647,23 @@ function renderBeatList(scene) {
       )
     );
   } else {
-    scene.beats.forEach((beat) => {
+    scene.beats.forEach((beat, beatIndex) => {
       const item = createElement('li', 'beat-item');
-      item.draggable = true;
-      item.dataset.dragType = 'beat';
-      item.dataset.sceneId = scene.id;
-      item.dataset.beatId = beat.id;
-      item.dataset.dropType = 'beat';
-      item.addEventListener('dragstart', handleDragStart);
-      item.addEventListener('dragend', handleDragEnd);
-      item.addEventListener('dragenter', handleDragOver);
-      item.addEventListener('dragover', handleDragOver);
-      item.addEventListener('drop', handleDrop);
-      item.addEventListener('dragleave', handleDragLeave);
       const beatHeader = createElement('div', 'beat-item-header');
       beatHeader.appendChild(createElement('p', 'beat-item-label', `Beat ${beat.order}`));
+
+      const beatControls = createElement('div', 'beat-item-controls');
+      beatControls.appendChild(
+        createReorderButton('up', 'Move beat up', beatIndex === 0, () =>
+          actions.shiftBeat(scene.id, beat.id, -1)
+        )
+      );
+      beatControls.appendChild(
+        createReorderButton('down', 'Move beat down', beatIndex === scene.beats.length - 1, () =>
+          actions.shiftBeat(scene.id, beat.id, 1)
+        )
+      );
+
       const deleteBeatButton = createElement('button', 'button-icon button-icon-danger beat-delete', '🗑');
       deleteBeatButton.title = 'Delete beat';
       deleteBeatButton.addEventListener('click', (event) => {
@@ -4177,7 +4674,9 @@ function renderBeatList(scene) {
         }
       });
       deleteBeatButton.addEventListener('mousedown', (event) => event.stopPropagation());
-      beatHeader.appendChild(deleteBeatButton);
+      beatControls.appendChild(deleteBeatButton);
+
+      beatHeader.appendChild(beatControls);
       item.appendChild(beatHeader);
       item.appendChild(createElement('p', 'beat-item-title', beat.title));
       if (beat.summary) {
@@ -4302,8 +4801,10 @@ function renderAssistantPanel() {
   input.value = state.ui.chatInput;
   input.rows = 3;
   input.addEventListener('input', (event) => {
+    const nextValue = event.target.value;
+    sendButton.disabled = chatState.isSending || nextValue.trim().length === 0;
     markChatInputFocus(input.selectionStart, input.selectionEnd);
-    actions.setChatInput(event.target.value);
+    actions.setChatInput(nextValue);
   });
   input.addEventListener('focus', () => {
     markChatInputFocus(input.selectionStart, input.selectionEnd);
@@ -4386,36 +4887,179 @@ function renderAssistant() {
   assistantRoot.appendChild(renderAssistantPanel());
 }
 
+function extractOrderFromId(id, pattern) {
+  if (typeof id !== 'string') {
+    return null;
+  }
+  const match = id.match(pattern);
+  if (!match || !match[1]) {
+    return null;
+  }
+  const parsed = Number.parseInt(match[1], 10);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function formatActDisplayTitle(act) {
+  if (!act) {
+    return '';
+  }
+  const order =
+    typeof act.order === 'number' && Number.isFinite(act.order)
+      ? act.order
+      : extractOrderFromId(act.id, /^A(\d+)$/);
+  const orderLabel = order ?? '?';
+  const title = typeof act.title === 'string' ? act.title.trim() : '';
+  return title.length > 0 ? `Act ${orderLabel}: ${title}` : `Act ${orderLabel}`;
+}
+
+function formatChapterDisplayTitle(chapter) {
+  if (!chapter) {
+    return '';
+  }
+  const order =
+    typeof chapter.order === 'number' && Number.isFinite(chapter.order)
+      ? chapter.order
+      : extractOrderFromId(chapter.id, /\.C(\d+)$/);
+  const orderLabel = order ?? '?';
+  const title = typeof chapter.title === 'string' ? chapter.title.trim() : '';
+  return title.length > 0 ? `Ch. ${orderLabel}: ${title}` : `Ch. ${orderLabel}`;
+}
+
+function formatSceneHeading(scene, fallbackIndex = null) {
+  if (!scene) {
+    return 'Scene';
+  }
+  const order =
+    typeof scene.order === 'number' && Number.isFinite(scene.order)
+      ? scene.order
+      : Number.isInteger(fallbackIndex)
+        ? fallbackIndex + 1
+        : extractOrderFromId(scene.id, /\.S(\d+)$/);
+  const orderLabel = order ?? '?';
+  const title = typeof scene.title === 'string' ? scene.title.trim() : '';
+  if (title.length > 0) {
+    return `Scene ${orderLabel}: ${title}`;
+  }
+  return `Scene ${orderLabel}: `;
+}
+
 function createSceneLocation(scene) {
   const chapter = state.chapters[scene.chapterId];
   const act = chapter ? state.acts.find((item) => item.id === chapter.actId) : null;
   const parts = [];
   if (act) {
-    parts.push(act.title);
+    const actLabel = formatActDisplayTitle(act);
+    if (actLabel) {
+      parts.push(actLabel);
+    }
   }
   if (chapter) {
-    parts.push(chapter.title);
+    const chapterLabel = formatChapterDisplayTitle(chapter);
+    if (chapterLabel) {
+      parts.push(chapterLabel);
+    }
   }
   return parts.join(' › ');
 }
 
-function createSceneSummary(scene) {
-  const beats = scene.beats.length;
-  const words = scene.wordCount;
-  const beatsLabel = `${beats} ${beats === 1 ? 'beat' : 'beats'}`;
-  const wordsLabel = `${words} ${words === 1 ? 'word' : 'words'}`;
-  return `${beatsLabel} · ${wordsLabel} · ${scene.draftStatus}`;
-}
-
 function formatUpdatedAt(value) {
   if (!value) {
-    return 'Last updated: not yet saved';
+    return 'Updated: not yet saved';
   }
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
-    return 'Last updated: not yet saved';
+    return 'Updated: not yet saved';
   }
-  return `Last updated ${parsed.toLocaleString()}`;
+  const now = new Date();
+  const sameDay = parsed.toDateString() === now.toDateString();
+  const timeLabel = parsed.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return sameDay ? `Updated ${timeLabel}` : `Updated ${parsed.toLocaleDateString()} ${timeLabel}`;
+}
+
+function createCodexSidebarElement(options = {}) {
+  const {
+    tag = 'aside',
+    className = 'codex-main-sidebar',
+    emptyClassName = 'codex-empty',
+    entryButtonClass = 'codex-entry-button',
+    searchTokens = []
+  } = options;
+
+  const container = document.createElement(tag);
+  if (className) {
+    container.className = className;
+  }
+
+  if (!state || !state.codex || !state.codex.entries) {
+    container.appendChild(createElement('p', emptyClassName, 'No entries yet. Add details as you write.'));
+    return container;
+  }
+
+  const grouped = groupCodexEntries(searchTokens);
+  const categoryKeys = Object.keys(grouped).filter((key) => grouped[key] && grouped[key].length > 0);
+  if (categoryKeys.length === 0) {
+    container.appendChild(createElement('p', emptyClassName, 'No Codex entries match the current filters.'));
+    return container;
+  }
+
+  const collapsedCategories =
+    state.ui && state.ui.codexSidebar && Array.isArray(state.ui.codexSidebar.collapsedCategories)
+      ? state.ui.codexSidebar.collapsedCategories
+      : [];
+
+  categoryKeys
+    .sort((a, b) => (CATEGORY_LABELS[a] || a).localeCompare(CATEGORY_LABELS[b] || b))
+    .forEach((category) => {
+      const entries = grouped[category];
+      if (!entries || entries.length === 0) {
+        return;
+      }
+      const section = document.createElement('details');
+      section.className = 'codex-category';
+      let isInitializing = true;
+      if (!collapsedCategories.includes(category)) {
+        section.open = true;
+      }
+      section.addEventListener('toggle', () => {
+        if (isInitializing) {
+          return;
+        }
+        const shouldCollapse = !section.open;
+        const collapsed = state.ui.codexSidebar && Array.isArray(state.ui.codexSidebar.collapsedCategories)
+          ? state.ui.codexSidebar.collapsedCategories
+          : [];
+        const isCollapsed = collapsed.includes(category);
+        if (shouldCollapse === isCollapsed) {
+          return;
+        }
+        actions.toggleCodexCategoryCollapse(category, section.open);
+      });
+
+      const summary = document.createElement('summary');
+      summary.className = 'codex-category-summary';
+      summary.textContent = `${CATEGORY_LABELS[category] || category} (${entries.length})`;
+      section.appendChild(summary);
+
+      const list = createElement('ul', 'codex-entry-list');
+      entries.forEach((entry) => {
+        const item = document.createElement('li');
+        const mentionCount = entry.stats && typeof entry.stats.mentionCount === 'number' ? entry.stats.mentionCount : 0;
+        const label = mentionCount > 0 ? `${entry.name} · ${mentionCount}` : entry.name;
+        const button = createElement(
+          'button',
+          `${entryButtonClass}${state.codex.selectedId === entry.id ? ' is-active' : ''}`,
+          label
+        );
+        button.addEventListener('click', () => actions.selectCodexEntry(entry.id));
+        item.appendChild(button);
+        list.appendChild(item);
+      });
+      section.appendChild(list);
+      isInitializing = false;
+      container.appendChild(section);
+    });
+
+  return container;
 }
 
 function renderCodexView() {
@@ -4430,6 +5074,10 @@ function renderCodexView() {
     return;
   }
 
+  const searchTokens = parseCodexSearchTokens(state.ui.codexSearch);
+  const groupedEntries = groupCodexEntries(searchTokens);
+  const hasResults = Object.values(groupedEntries).some((list) => list.length > 0);
+
   const container = createElement('div', 'codex-full');
   const header = createElement('header', 'codex-main-header');
   const headerText = document.createElement('div');
@@ -4440,6 +5088,22 @@ function renderCodexView() {
   header.appendChild(headerText);
 
   const headerActions = createElement('div', 'codex-main-header-actions');
+  const searchWrapper = createElement('div', 'codex-search');
+  const searchInput = document.createElement('input');
+  searchInput.type = 'text';
+  searchInput.className = 'codex-search-input';
+  searchInput.placeholder = 'Search @mentions…';
+  searchInput.value = state.ui.codexSearch || '';
+  searchInput.addEventListener('input', (event) => actions.setCodexSearch(event.target.value));
+  searchWrapper.appendChild(searchInput);
+  if ((state.ui.codexSearch || '').length > 0) {
+    const clearButton = createElement('button', 'codex-search-clear', '\u00D7');
+    clearButton.type = 'button';
+    clearButton.addEventListener('click', () => actions.setCodexSearch(''));
+    searchWrapper.appendChild(clearButton);
+  }
+  headerActions.appendChild(searchWrapper);
+
   const addEntryButton = createElement('button', 'button-outline', '+ Entry');
   addEntryButton.addEventListener('click', () => {
     const name = window.prompt('New Codex entry name');
@@ -4455,41 +5119,25 @@ function renderCodexView() {
 
   const body = createElement('div', 'codex-main-body');
 
-  const sidebar = createElement('aside', 'codex-main-sidebar');
-  const grouped = groupCodexEntries();
-  const categoryKeys = Object.keys(grouped);
-  if (categoryKeys.length === 0) {
-    sidebar.appendChild(createElement('p', 'codex-empty', 'No entries yet. Add details as you write.'));
-  } else {
-    categoryKeys
-      .sort((a, b) => (CATEGORY_LABELS[a] || a).localeCompare(CATEGORY_LABELS[b] || b))
-      .forEach((category) => {
-        const section = createElement('section', 'codex-category');
-        section.appendChild(createElement('h3', 'codex-category-title', CATEGORY_LABELS[category] || category));
-        const list = createElement('ul', 'codex-entry-list');
-        grouped[category]
-          .slice()
-          .sort((a, b) => a.name.localeCompare(b.name))
-          .forEach((entry) => {
-            const item = document.createElement('li');
-            const button = createElement(
-              'button',
-              `codex-entry-button${state.codex.selectedId === entry.id ? ' is-active' : ''}`,
-              entry.name
-            );
-            button.addEventListener('click', () => actions.selectCodexEntry(entry.id));
-            item.appendChild(button);
-            list.appendChild(item);
-          });
-        section.appendChild(list);
-        sidebar.appendChild(section);
-      });
-  }
+  const sidebar = createCodexSidebarElement({ searchTokens });
   body.appendChild(sidebar);
 
   const content = createElement('div', 'codex-main-content');
-  const selectedEntry = state.codex.selectedId ? state.codex.entries[state.codex.selectedId] : null;
-  if (!selectedEntry) {
+  let selectedEntry = state.codex.selectedId ? state.codex.entries[state.codex.selectedId] : null;
+  if (selectedEntry && !codexEntryMatchesTokens(selectedEntry, searchTokens)) {
+    selectedEntry = null;
+  }
+  if (!hasResults) {
+    content.appendChild(
+      createElement(
+        'div',
+        'codex-placeholder',
+        searchTokens.length > 0
+          ? 'No Codex entries match the current @mention search.'
+          : 'No Codex entries found yet. Add details as you write.'
+      )
+    );
+  } else if (!selectedEntry) {
     content.appendChild(createElement('div', 'codex-placeholder', 'Select a Codex entry to view details.'));
   } else {
     const entryWrapper = createElement('div', 'codex-entry');
@@ -4546,6 +5194,9 @@ function renderCodexView() {
     summarySection.appendChild(summaryArea);
     entryWrapper.appendChild(summarySection);
 
+    entryWrapper.appendChild(renderCodexMediaSection(selectedEntry));
+    entryWrapper.appendChild(renderCodexRelations(selectedEntry));
+
     if (selectedEntry.category === 'character') {
       entryWrapper.appendChild(renderCharacterCoreSections(selectedEntry));
       entryWrapper.appendChild(renderCharacterDynamicSection(selectedEntry, state));
@@ -4581,6 +5232,161 @@ function populateSceneOptions(selectElement, orderedSceneIds, appState, includeG
   });
 }
 
+function renderCodexRelations(entry) {
+  const section = createElement('section', 'codex-relations');
+  section.appendChild(createElement('h4', 'codex-section-title', 'Relationships'));
+
+  const outgoing = Array.isArray(entry?.relations) ? entry.relations : [];
+  const incoming = Array.isArray(entry?.relatedBy) ? entry.relatedBy : [];
+
+  if (outgoing.length === 0 && incoming.length === 0) {
+    section.appendChild(createElement('p', 'codex-relations-empty', 'No relationships captured yet.'));
+    return section;
+  }
+
+  if (outgoing.length > 0) {
+    const group = createElement('div', 'codex-relation-group');
+    group.appendChild(createElement('h5', 'codex-relation-heading', 'Connected to'));
+    const list = createElement('div', 'codex-relation-list');
+    outgoing.forEach((relation) => {
+      if (!relation || !relation.targetId) {
+        return;
+      }
+      const target = state.codex.entries[relation.targetId];
+      if (!target) {
+        return;
+      }
+      const item = createElement('div', 'codex-relation-item');
+      const button = createElement('button', 'codex-relation-tag', target.name);
+      button.addEventListener('click', () => actions.selectCodexEntry(target.id));
+      item.appendChild(button);
+      if (Array.isArray(relation.sources) && relation.sources.length > 0) {
+        item.appendChild(
+          createElement(
+            'span',
+            'codex-relation-meta',
+            `${relation.sources.length} note${relation.sources.length === 1 ? '' : 's'}`
+          )
+        );
+      }
+      list.appendChild(item);
+    });
+    group.appendChild(list);
+    section.appendChild(group);
+  }
+
+  if (incoming.length > 0) {
+    const group = createElement('div', 'codex-relation-group');
+    group.appendChild(createElement('h5', 'codex-relation-heading', 'Mentioned by'));
+    const list = createElement('div', 'codex-relation-list');
+    incoming.forEach((relation) => {
+      if (!relation || !relation.sourceId) {
+        return;
+      }
+      const sourceEntry = state.codex.entries[relation.sourceId];
+      if (!sourceEntry) {
+        return;
+      }
+      const item = createElement('div', 'codex-relation-item');
+      const button = createElement('button', 'codex-relation-tag', sourceEntry.name);
+      button.addEventListener('click', () => actions.selectCodexEntry(sourceEntry.id));
+      item.appendChild(button);
+      if (Array.isArray(relation.sources) && relation.sources.length > 0) {
+        item.appendChild(
+          createElement(
+            'span',
+            'codex-relation-meta',
+            `${relation.sources.length} note${relation.sources.length === 1 ? '' : 's'}`
+          )
+        );
+      }
+      list.appendChild(item);
+    });
+    group.appendChild(list);
+    section.appendChild(group);
+  }
+
+  return section;
+}
+
+function renderCodexMediaSection(entry) {
+  const section = createElement('section', 'codex-media-section');
+  section.appendChild(createElement('h4', 'codex-section-title', 'Images'));
+
+  const mediaList = Array.isArray(entry?.media) ? entry.media : [];
+  const controls = createElement('div', 'codex-media-controls');
+  const uploadButton = createElement('button', 'button-outline', 'Upload image');
+  uploadButton.type = 'button';
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'image/*';
+  fileInput.className = 'codex-media-input';
+  fileInput.addEventListener('change', (event) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) {
+      return;
+    }
+    const file = files[0];
+    if (file.size > MAX_MEDIA_SIZE_BYTES) {
+      window.alert('Image is too large (maximum size is 2 MB).');
+      fileInput.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl) {
+        fileInput.value = '';
+        return;
+      }
+      actions.addCodexMedia(entry.id, {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        dataUrl
+      });
+      fileInput.value = '';
+    });
+    reader.addEventListener('error', () => {
+      console.warn('Failed to read image file for Codex entry');
+      fileInput.value = '';
+    });
+    reader.readAsDataURL(file);
+  });
+  uploadButton.addEventListener('click', () => fileInput.click());
+  controls.appendChild(uploadButton);
+  controls.appendChild(fileInput);
+  section.appendChild(controls);
+
+  if (mediaList.length === 0) {
+    section.appendChild(createElement('p', 'codex-media-empty', 'No images uploaded yet.'));
+    return section;
+  }
+
+  const grid = createElement('div', 'codex-media-grid');
+  mediaList.forEach((media) => {
+    if (!media || typeof media.dataUrl !== 'string') {
+      return;
+    }
+    const item = document.createElement('figure');
+    item.className = 'codex-media-item';
+    const image = document.createElement('img');
+    image.src = media.dataUrl;
+    image.alt = media.name || 'Codex image';
+    item.appendChild(image);
+    const caption = createElement('figcaption', 'codex-media-caption', media.name || 'Image');
+    item.appendChild(caption);
+    const removeButton = createElement('button', 'codex-media-remove', '\u00D7');
+    removeButton.title = 'Remove image';
+    removeButton.addEventListener('click', () => actions.removeCodexMedia(entry.id, media.id));
+    item.appendChild(removeButton);
+    grid.appendChild(item);
+  });
+  section.appendChild(grid);
+
+  return section;
+}
+
 function renderCharacterCoreSections(entry) {
   const coreSection = createElement('section', 'codex-character-section');
   coreSection.appendChild(createElement('h4', 'codex-section-title', 'Core Info'));
@@ -4608,12 +5414,12 @@ function renderCharacterCoreSections(entry) {
   coreSection.appendChild(backgroundBlock);
 
   const core = entry.core && typeof entry.core === 'object' ? entry.core : createCharacterCoreSections();
-  const beatLookup = buildBeatLookup(state);
   CHARACTER_CORE_SECTION_KEYS.forEach((sectionKey) => {
     const subsection = createElement('div', 'codex-core-section');
     const header = createElement('div', 'codex-core-header');
     header.appendChild(createElement('h5', 'codex-subsection-title', CHARACTER_CORE_SECTION_LABELS[sectionKey]));
-    const addButton = createElement('button', 'button-outline', '+ Bullet');
+    const addButton = createElement('button', 'button-outline', '+');
+    addButton.title = 'Add bullet';
     addButton.addEventListener('click', () => actions.addCodexCoreDetail(entry.id, sectionKey));
     header.appendChild(addButton);
     subsection.appendChild(header);
@@ -4635,17 +5441,16 @@ function renderCharacterCoreSections(entry) {
         });
         itemBody.appendChild(textarea);
 
-        const removeButton = createElement('button', 'codex-core-remove', 'Remove');
+        const tagLabel = formatDetailTag(item);
+        if (tagLabel) {
+          itemBody.appendChild(createElement('span', 'codex-detail-tag', tagLabel));
+        }
+
+        const removeButton = createElement('button', 'codex-core-remove', '-');
+        removeButton.title = 'Remove bullet';
         removeButton.addEventListener('click', () => actions.removeCodexCoreDetail(entry.id, sectionKey, item.id));
         itemBody.appendChild(removeButton);
         itemRow.appendChild(itemBody);
-
-        const metaLabel = (item.sourceBeatId || item.sourceSceneId)
-          ? formatDetailMeta(state, beatLookup, item)
-          : null;
-        if (metaLabel) {
-          itemRow.appendChild(createElement('p', 'codex-core-meta', metaLabel));
-        }
 
         listContainer.appendChild(itemRow);
       });
@@ -4684,8 +5489,6 @@ function renderCharacterDynamicSection(entry, appState) {
     return dynamicSection;
   }
 
-  const beatLookup = buildBeatLookup(appState);
-
   groups.forEach((group) => {
     const detailGroup = document.createElement('details');
     detailGroup.className = 'codex-dynamic-group';
@@ -4697,8 +5500,11 @@ function renderCharacterDynamicSection(entry, appState) {
     if (group.key === 'general') {
       summary.textContent = `General notes (${group.details.length})`;
     } else {
-      const sceneLabel = group.scene ? group.scene.title || group.scene.id : group.key;
-      summary.textContent = `${sceneLabel} (${group.details.length})`;
+      const sceneLabel = group.scene ? group.scene.title || group.scene.id : null;
+      summary.textContent = `[${group.key}] (${group.details.length})`;
+      if (sceneLabel && sceneLabel !== group.key) {
+        summary.title = sceneLabel;
+      }
     }
     detailGroup.appendChild(summary);
 
@@ -4715,6 +5521,14 @@ function renderCharacterDynamicSection(entry, appState) {
       itemRow.appendChild(textarea);
 
       const controls = createElement('div', 'codex-dynamic-controls');
+      const resolvedDetail =
+        detail.sourceSceneId || group.key === 'general'
+          ? detail
+          : { ...detail, sourceSceneId: group.key };
+      const tagLabel = formatDetailTag(resolvedDetail);
+      if (tagLabel) {
+        controls.appendChild(createElement('span', 'codex-detail-tag', tagLabel));
+      }
       const select = document.createElement('select');
       select.className = 'codex-dynamic-select';
       populateSceneOptions(select, orderedSceneIds, appState, true);
@@ -4758,20 +5572,12 @@ function renderCharacterDynamicSection(entry, appState) {
         controls.appendChild(beatSelect);
       }
 
-      const removeButton = createElement('button', 'codex-dynamic-remove', 'Remove');
+      const removeButton = createElement('button', 'codex-dynamic-remove', '-');
+      removeButton.title = 'Remove note';
       removeButton.addEventListener('click', () => actions.removeCodexDetail(entry.id, detail.id));
       controls.appendChild(removeButton);
 
       itemRow.appendChild(controls);
-
-      const detailForMeta =
-        detail.sourceSceneId || group.key === 'general'
-          ? detail
-          : { ...detail, sourceSceneId: group.key };
-      const metaLabel = formatDetailMeta(appState, beatLookup, detailForMeta);
-      if (metaLabel) {
-        itemRow.appendChild(createElement('p', 'codex-dynamic-meta', metaLabel));
-      }
 
       itemsContainer.appendChild(itemRow);
     });
@@ -4797,7 +5603,6 @@ function renderGenericCodexDetailsSection(entry, appState) {
 
   const orderedSceneIds = getOrderedSceneIds(appState);
   const list = entry.details && Array.isArray(entry.details) ? entry.details : [];
-  const beatLookup = buildBeatLookup(appState);
 
   if (list.length === 0) {
     section.appendChild(createElement('p', 'codex-generic-empty', 'No notes recorded yet.'));
@@ -4815,6 +5620,10 @@ function renderGenericCodexDetailsSection(entry, appState) {
       item.appendChild(textarea);
 
       const controls = createElement('div', 'codex-generic-controls');
+      const tagLabel = formatDetailTag(detail);
+      if (tagLabel) {
+        controls.appendChild(createElement('span', 'codex-detail-tag', tagLabel));
+      }
       const select = document.createElement('select');
       select.className = 'codex-dynamic-select';
       populateSceneOptions(select, orderedSceneIds, appState, true);
@@ -4857,16 +5666,12 @@ function renderGenericCodexDetailsSection(entry, appState) {
         controls.appendChild(beatSelect);
       }
 
-      const removeButton = createElement('button', 'codex-dynamic-remove', 'Remove');
+      const removeButton = createElement('button', 'codex-dynamic-remove', '-');
+      removeButton.title = 'Remove note';
       removeButton.addEventListener('click', () => actions.removeCodexDetail(entry.id, detail.id));
       controls.appendChild(removeButton);
 
       item.appendChild(controls);
-
-      const metaLabel = formatDetailMeta(appState, beatLookup, detail);
-      if (metaLabel) {
-        item.appendChild(createElement('p', 'codex-dynamic-meta', metaLabel));
-      }
 
       listContainer.appendChild(item);
     });
@@ -4891,29 +5696,58 @@ function renderGenericCodexDetailsSection(entry, appState) {
   return section;
 }
 
-function groupCodexEntries() {
-  if (!state) {
+function codexEntryMatchesTokens(entry, tokens) {
+  if (!entry || !Array.isArray(tokens) || tokens.length === 0) {
+    return true;
+  }
+  const mentionKeys =
+    entry.stats && Array.isArray(entry.stats.mentionKeys) ? entry.stats.mentionKeys : [];
+  return tokens.every((token) => mentionKeys.includes(token));
+}
+
+function groupCodexEntries(filterTokens = []) {
+  if (!state || !state.codex || !state.codex.entries) {
     return {};
   }
+  const tokens = Array.isArray(filterTokens) ? filterTokens.filter(Boolean) : [];
   const grouped = {};
   Object.values(state.codex.entries).forEach((entry) => {
+    if (!entry) {
+      return;
+    }
+    if (!codexEntryMatchesTokens(entry, tokens)) {
+      return;
+    }
     const key = entry.category || 'lore';
     if (!grouped[key]) {
       grouped[key] = [];
     }
     grouped[key].push(entry);
   });
+  Object.values(grouped).forEach((list) => {
+    list.sort((a, b) => {
+      const countA = a.stats && typeof a.stats.mentionCount === 'number' ? a.stats.mentionCount : 0;
+      const countB = b.stats && typeof b.stats.mentionCount === 'number' ? b.stats.mentionCount : 0;
+      if (countA !== countB) {
+        return countB - countA;
+      }
+      return a.name.localeCompare(b.name);
+    });
+  });
   return grouped;
 }
 
 function renderAll() {
+  applyLayoutWidths();
   renderHeaderActions();
-  renderOutline();
+  renderSidebar();
   renderMainView();
   renderAssistant();
   renderSettings();
 }
 
+setupSidebarResizers();
+applyLayoutWidths();
 renderAll();
 bootstrapState();
 
