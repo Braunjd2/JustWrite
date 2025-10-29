@@ -71,6 +71,39 @@ const SCENE_DRAFT_SYSTEM_PROMPT = [
   'Return the scene text only unless the user asks for additional commentary.'
 ].join('\n');
 
+function createInlineEditableText(initialValue, options = {}) {
+  const { onCommit, className = '', placeholder = '', allowEmpty = false } = options;
+  const span = document.createElement('span');
+  span.className = `inline-editable${className ? ` ${className}` : ''}`;
+  span.contentEditable = 'true';
+  span.spellcheck = false;
+  if (placeholder) {
+    span.dataset.placeholder = placeholder;
+  }
+  span.textContent = initialValue || '';
+  const commit = () => {
+    if (typeof onCommit !== 'function') {
+      return;
+    }
+    const raw = span.textContent || '';
+    const nextValue = allowEmpty ? raw : raw.trim();
+    onCommit(nextValue);
+  };
+  span.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      span.blur();
+    }
+  });
+  span.addEventListener('blur', commit);
+  span.addEventListener('paste', (event) => {
+    event.preventDefault();
+    const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+    document.execCommand('insertText', false, text);
+  });
+  return span;
+}
+
 function createId(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
 }
@@ -630,8 +663,9 @@ function createInitialState() {
       generatingBeats: false,
       generatingSceneDraft: false,
       codexSearch: '',
-      codexSidebar: {
-        collapsedCategories: []
+  codexSidebar: {
+        collapsedCategories: [],
+        selectedEntryId: null
       },
       chat: {
         isSending: false,
@@ -919,6 +953,10 @@ function normalizeState(value) {
   const collapsedCategories = Array.isArray(codexSidebarValue.collapsedCategories)
     ? codexSidebarValue.collapsedCategories.filter((item) => typeof item === 'string')
     : [];
+  const sidebarSelectedEntry =
+    typeof codexSidebarValue.selectedEntryId === 'string' && codexEntriesNormalized[codexSidebarValue.selectedEntryId]
+      ? codexSidebarValue.selectedEntryId
+      : null;
   const rawSceneScanCollapsed = uiValue.sceneScanCollapsed && typeof uiValue.sceneScanCollapsed === 'object'
     ? uiValue.sceneScanCollapsed
     : {};
@@ -944,7 +982,8 @@ function normalizeState(value) {
     generatingSceneDraft: false,
     codexSearch: codexSearchValue,
     codexSidebar: {
-      collapsedCategories
+      collapsedCategories,
+      selectedEntryId: sidebarSelectedEntry
     },
     selectionContext: selectionContextNormalized,
     chat: {
@@ -1451,6 +1490,43 @@ const actions = {
       scene.beats = normalizeBeats(sceneId, scene.beats);
     });
   },
+  updateBeat(sceneId, beatId, changes = {}) {
+    if (!sceneId || !beatId || !changes || typeof changes !== 'object') {
+      return;
+    }
+    updateState((draft) => {
+      const scene = draft.scenes[sceneId];
+      if (!scene || !Array.isArray(scene.beats)) {
+        return false;
+      }
+      const beat = scene.beats.find((item) => item && item.id === beatId);
+      if (!beat) {
+        return false;
+      }
+      let mutated = false;
+      if (Object.prototype.hasOwnProperty.call(changes, 'title')) {
+        const nextTitle = typeof changes.title === 'string' ? changes.title : '';
+        if (beat.title !== nextTitle) {
+          beat.title = nextTitle;
+          mutated = true;
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(changes, 'summary')) {
+        const nextSummary = typeof changes.summary === 'string' ? changes.summary : '';
+        if (beat.summary !== nextSummary) {
+          beat.summary = nextSummary;
+          mutated = true;
+        }
+      }
+      if (mutated) {
+        beat.updatedAt = new Date().toISOString();
+        scene.lastUpdated = new Date().toISOString();
+        if (!scene.beats.some((item) => item.id === beatId && item.order === beat.order)) {
+          scene.beats = normalizeBeats(sceneId, scene.beats);
+        }
+      }
+    });
+  },
   selectScene(sceneId) {
     updateState((draft) => {
       if (draft.selectedSceneId === sceneId) {
@@ -1502,6 +1578,9 @@ const actions = {
         return false;
       }
       draft.ui.codexSearch = nextValue;
+      if (draft.ui.codexSidebar) {
+        draft.ui.codexSidebar.selectedEntryId = null;
+      }
     }, { skipHistory: true });
   },
   toggleCodexCategoryCollapse(categoryId, isOpen) {
@@ -1526,6 +1605,28 @@ const actions = {
         }
         collapsed.splice(index, 1);
       }
+    }, { skipHistory: true });
+  },
+  openCodexSidebarEntry(entryId) {
+    if (!entryId) {
+      return;
+    }
+    updateState((draft) => {
+      if (!draft.ui.codexSidebar) {
+        draft.ui.codexSidebar = { collapsedCategories: [], selectedEntryId: null };
+      }
+      draft.ui.codexSidebar.selectedEntryId = entryId;
+    }, { skipHistory: true });
+  },
+  closeCodexSidebarEntry() {
+    updateState((draft) => {
+      if (!draft.ui.codexSidebar) {
+        return false;
+      }
+      if (!draft.ui.codexSidebar.selectedEntryId) {
+        return false;
+      }
+      draft.ui.codexSidebar.selectedEntryId = null;
     }, { skipHistory: true });
   },
   setSidebarWidths(widths) {
@@ -3787,20 +3888,21 @@ function buildOutlineSidebarContent(outlineUi) {
       onDown: () => actions.shiftAct(act.id, 1)
     });
     actTitleRow.appendChild(actReorder);
-    actTitleRow.appendChild(createElement('h3', 'outline-act-title', `Act ${act.order}: ${act.title}`));
+    const actTitle = document.createElement('h3');
+    actTitle.className = 'outline-act-title';
+    const actPrefix = document.createElement('span');
+    actPrefix.className = 'outline-title-prefix';
+    actPrefix.textContent = `Act ${act.order}: `;
+    const actEditable = createInlineEditableText(act.title || '', {
+      onCommit: (next) => actions.renameAct(act.id, next),
+      className: 'outline-editable',
+      allowEmpty: false
+    });
+    actTitle.appendChild(actPrefix);
+    actTitle.appendChild(actEditable);
+    actTitleRow.appendChild(actTitle);
 
     const actActions = createElement('div', 'outline-item-actions');
-    const renameActButton = createElement('button', 'button-icon', '✎');
-    renameActButton.title = 'Rename act';
-    renameActButton.addEventListener('click', (event) => {
-      event.stopPropagation();
-      const nextTitle = window.prompt('Rename act', act.title);
-      if (nextTitle !== null) {
-        actions.renameAct(act.id, nextTitle);
-      }
-    });
-    actActions.appendChild(renameActButton);
-
     const deleteActButton = createElement('button', 'button-icon button-icon-danger', '🗑');
     deleteActButton.title = 'Delete act';
     deleteActButton.addEventListener('click', (event) => {
@@ -3867,25 +3969,21 @@ function buildOutlineSidebarContent(outlineUi) {
         });
         chapterTitleRow.appendChild(chapterReorder);
 
-        const chapterTitleChip = createElement(
-          'span',
-          'outline-chapter-chip',
-          `Ch. ${chapter.order}: ${chapter.title}`
-        );
-        chapterTitleRow.appendChild(chapterTitleChip);
+        const chapterTitle = document.createElement('span');
+        chapterTitle.className = 'outline-chapter-chip';
+        const chapterPrefix = document.createElement('span');
+        chapterPrefix.className = 'outline-title-prefix';
+        chapterPrefix.textContent = `Ch. ${chapter.order}: `;
+        const chapterEditable = createInlineEditableText(chapter.title || '', {
+          onCommit: (next) => actions.renameChapter(chapter.id, next),
+          className: 'outline-editable',
+          allowEmpty: false
+        });
+        chapterTitle.appendChild(chapterPrefix);
+        chapterTitle.appendChild(chapterEditable);
+        chapterTitleRow.appendChild(chapterTitle);
 
         const chapterActions = createElement('div', 'outline-item-actions');
-        const renameChapterButton = createElement('button', 'button-icon', '✎');
-        renameChapterButton.title = 'Rename chapter';
-        renameChapterButton.addEventListener('click', (event) => {
-          event.stopPropagation();
-          const nextTitle = window.prompt('Rename chapter', chapter.title);
-          if (nextTitle !== null) {
-            actions.renameChapter(chapter.id, nextTitle);
-          }
-        });
-        chapterActions.appendChild(renameChapterButton);
-
         const deleteChapterButton = createElement('button', 'button-icon button-icon-danger', '🗑');
         deleteChapterButton.title = 'Delete chapter';
         deleteChapterButton.addEventListener('click', (event) => {
@@ -3955,9 +4053,35 @@ function buildOutlineSidebarContent(outlineUi) {
               'button',
               `scene-button${state.selectedSceneId === scene.id ? ' is-active' : ''}`
             );
-            sceneButton.addEventListener('click', () => actions.selectScene(scene.id));
             const buttonBody = createElement('div', 'scene-button-body');
-            buttonBody.appendChild(createElement('p', 'scene-button-title', formatSceneHeading(scene, sceneIndex)));
+            const sceneTitleLine = document.createElement('p');
+            sceneTitleLine.className = 'scene-button-title';
+            const scenePrefix = document.createElement('span');
+            scenePrefix.className = 'outline-title-prefix';
+            const orderLabel = typeof scene.order === 'number' && Number.isFinite(scene.order)
+              ? scene.order
+              : sceneIndex + 1;
+            scenePrefix.textContent = `Scene ${orderLabel}: `;
+            const sceneEditable = createInlineEditableText(scene.title || '', {
+              onCommit: (next) => actions.renameScene(scene.id, next),
+              className: 'outline-editable',
+              allowEmpty: false
+            });
+            sceneEditable.addEventListener('mousedown', (event) => {
+              event.stopPropagation();
+              event.preventDefault();
+              if (document.activeElement !== sceneEditable) {
+                requestAnimationFrame(() => sceneEditable.focus());
+              }
+            });
+            sceneEditable.addEventListener('click', (event) => {
+              event.stopPropagation();
+              event.preventDefault();
+            });
+            sceneEditable.addEventListener('focus', (event) => event.stopPropagation());
+            sceneTitleLine.appendChild(scenePrefix);
+            sceneTitleLine.appendChild(sceneEditable);
+            buttonBody.appendChild(sceneTitleLine);
             buttonBody.appendChild(
               createElement(
                 'p',
@@ -3966,20 +4090,10 @@ function buildOutlineSidebarContent(outlineUi) {
               )
             );
             sceneButton.appendChild(buttonBody);
+            sceneButton.addEventListener('click', () => actions.selectScene(scene.id));
             sceneRow.appendChild(sceneButton);
 
             const sceneActions = createElement('div', 'outline-item-actions scene-actions');
-            const renameScene = createElement('button', 'button-icon scene-rename', '✎');
-            renameScene.title = 'Rename scene';
-            renameScene.addEventListener('click', (event) => {
-              event.stopPropagation();
-              const nextTitle = window.prompt('Rename scene', scene.title);
-              if (nextTitle !== null) {
-                actions.renameScene(scene.id, nextTitle);
-              }
-            });
-            sceneActions.appendChild(renameScene);
-
             const deleteSceneButton = createElement('button', 'button-icon button-icon-danger scene-delete', '🗑');
             deleteSceneButton.title = 'Delete scene';
             deleteSceneButton.addEventListener('click', (event) => {
@@ -4109,14 +4223,6 @@ function renderWorkspace() {
   beatsButton.addEventListener('click', () => actions.toggleBeats());
   headerControls.appendChild(beatsButton);
 
-  const assistantButton = createElement(
-    'button',
-    `button-toggle${state.ui.showAssistant ? ' is-active' : ''}`,
-    state.ui.showAssistant ? 'Hide assistant' : 'Show assistant'
-  );
-  assistantButton.addEventListener('click', () => actions.toggleAssistant());
-  headerControls.appendChild(assistantButton);
-
   const undoButton = createElement('button', 'button-toggle', 'Undo');
   undoButton.addEventListener('click', () => actions.undo());
   if (undoStack.length === 0) {
@@ -4129,7 +4235,6 @@ function renderWorkspace() {
   headerRight.appendChild(headerControls);
 
   const quickActions = createElement('div', 'workspace-quick-actions');
-  quickActions.appendChild(createQuickActionButton('Manual beats', () => actions.toggleBeats()));
   const isQuickScanRunning = Boolean(state.ui.scanStatus && state.ui.scanStatus.state === 'running');
   const codexProviderId = getProviderId('codex');
   const hasCodexKey = hasApiKeyFor(codexProviderId);
@@ -4703,6 +4808,127 @@ function buildCodexSummary(appState, limit = 12) {
   return sorted
     .map((entry) => `- ${entry.name} (${entry.category || 'lore'}): ${entry.summary || 'No summary available.'}`)
     .join('\n');
+}
+
+function createCodexEntryContent(entry, options = {}) {
+  const {
+    wrapperClass = 'codex-entry',
+    showTitleRow = true,
+    showHeaderActions = true
+  } = options;
+
+  if (!entry) {
+    return createElement('div', wrapperClass, 'Entry not found.');
+  }
+
+  const entryWrapper = createElement('div', wrapperClass);
+
+  if (showTitleRow) {
+    const titleRow = createElement('div', 'codex-entry-title-row');
+    titleRow.appendChild(createElement('h3', 'codex-entry-name', entry.name));
+    if (showHeaderActions) {
+      const titleActions = createElement('div', 'codex-entry-actions');
+      const renameButton = createElement('button', 'button-icon', '✎');
+      renameButton.title = 'Rename entry';
+      renameButton.addEventListener('click', () => {
+        const nextName = window.prompt('Rename entry', entry.name);
+        if (nextName !== null) {
+          actions.renameCodexEntry(entry.id, nextName);
+        }
+      });
+      titleActions.appendChild(renameButton);
+
+      const deleteButton = createElement('button', 'codex-delete-button', 'Delete');
+      deleteButton.addEventListener('click', () => {
+        if (window.confirm('Delete this Codex entry? This cannot be undone.')) {
+          actions.deleteCodexEntry(entry.id);
+        }
+      });
+      titleActions.appendChild(deleteButton);
+      titleRow.appendChild(titleActions);
+    }
+    entryWrapper.appendChild(titleRow);
+  }
+
+  const categoryRow = createElement('div', 'codex-entry-category-row');
+  categoryRow.appendChild(createElement('label', 'codex-entry-label', 'Category'));
+  const categorySelect = document.createElement('select');
+  categorySelect.className = 'codex-entry-select';
+  Object.keys(CATEGORY_LABELS).forEach((key) => {
+    const option = document.createElement('option');
+    option.value = key;
+    option.textContent = CATEGORY_LABELS[key] || key;
+    categorySelect.appendChild(option);
+  });
+  categorySelect.value = entry.category;
+  categorySelect.addEventListener('change', (event) => {
+    actions.updateCodexCategory(entry.id, event.target.value);
+  });
+  categoryRow.appendChild(categorySelect);
+  entryWrapper.appendChild(categoryRow);
+
+  const summarySection = createElement('section', 'codex-summary-section');
+  summarySection.appendChild(createElement('label', 'codex-summary-label', 'Summary'));
+  const summaryArea = document.createElement('textarea');
+  summaryArea.className = 'codex-summary-textarea';
+  summaryArea.placeholder = 'Write a short description that captures the essence of this entry.';
+  summaryArea.value = entry.summary || '';
+  summaryArea.addEventListener('blur', (event) => {
+    actions.updateCodexSummary(entry.id, event.target.value);
+  });
+  summarySection.appendChild(summaryArea);
+  entryWrapper.appendChild(summarySection);
+
+  entryWrapper.appendChild(renderCodexMediaSection(entry));
+  entryWrapper.appendChild(renderCodexRelations(entry));
+
+  if (entry.category === 'character') {
+    entryWrapper.appendChild(renderCharacterCoreSections(entry));
+    entryWrapper.appendChild(renderCharacterDynamicSection(entry, state));
+  } else {
+    entryWrapper.appendChild(renderGenericCodexDetailsSection(entry, state));
+  }
+
+  return entryWrapper;
+}
+
+function createCodexSidebarDetail(entry) {
+  const detail = createElement('div', 'codex-sidebar-detail');
+  const header = createElement('div', 'codex-sidebar-detail-header');
+  const backButton = createElement('button', 'codex-sidebar-back', '← Back');
+  backButton.addEventListener('click', () => actions.closeCodexSidebarEntry());
+  header.appendChild(backButton);
+  header.appendChild(createElement('h3', 'codex-sidebar-title', entry.name));
+
+  const headerActions = createElement('div', 'codex-sidebar-header-actions');
+  const renameButton = createElement('button', 'button-icon', '✎');
+  renameButton.title = 'Rename entry';
+  renameButton.addEventListener('click', () => {
+    const nextName = window.prompt('Rename entry', entry.name);
+    if (nextName !== null) {
+      actions.renameCodexEntry(entry.id, nextName);
+    }
+  });
+  headerActions.appendChild(renameButton);
+
+  const deleteButton = createElement('button', 'codex-delete-button', 'Delete');
+  deleteButton.addEventListener('click', () => {
+    if (window.confirm('Delete this Codex entry? This cannot be undone.')) {
+      actions.deleteCodexEntry(entry.id);
+      actions.closeCodexSidebarEntry();
+    }
+  });
+  headerActions.appendChild(deleteButton);
+  header.appendChild(headerActions);
+  detail.appendChild(header);
+
+  const content = createCodexEntryContent(entry, {
+    wrapperClass: 'codex-entry codex-entry--sidebar',
+    showTitleRow: false,
+    showHeaderActions: false
+  });
+  detail.appendChild(content);
+  return detail;
 }
 
 function buildChatSystemPrompt(appState) {
@@ -5430,10 +5656,31 @@ function renderBeatList(scene) {
 
       beatHeader.appendChild(beatControls);
       item.appendChild(beatHeader);
-      item.appendChild(createElement('p', 'beat-item-title', beat.title));
-      if (beat.summary) {
-        item.appendChild(createElement('p', 'beat-item-summary', beat.summary));
-      }
+
+      const titleInput = document.createElement('input');
+      titleInput.className = 'beat-title-input';
+      titleInput.type = 'text';
+      titleInput.value = beat.title || '';
+      titleInput.placeholder = 'Beat title';
+      const commitTitle = () => actions.updateBeat(scene.id, beat.id, { title: titleInput.value });
+      titleInput.addEventListener('blur', commitTitle);
+      titleInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commitTitle();
+        }
+      });
+      item.appendChild(titleInput);
+
+      const summaryArea = document.createElement('textarea');
+      summaryArea.className = 'beat-summary-input';
+      summaryArea.placeholder = 'Beat summary…';
+      summaryArea.value = beat.summary || '';
+      summaryArea.rows = 3;
+      const commitSummary = () => actions.updateBeat(scene.id, beat.id, { summary: summaryArea.value });
+      summaryArea.addEventListener('blur', commitSummary);
+      item.appendChild(summaryArea);
+
       list.appendChild(item);
     });
   }
@@ -5754,6 +6001,15 @@ function createCodexSidebarElement(options = {}) {
   }
 
   const grouped = groupCodexEntries(searchTokens);
+  const sidebarState = state.ui && state.ui.codexSidebar ? state.ui.codexSidebar : { collapsedCategories: [], selectedEntryId: null };
+  const selectedSidebarEntryId = sidebarState.selectedEntryId;
+  if (selectedSidebarEntryId) {
+    const entry = state.codex.entries[selectedSidebarEntryId];
+    if (entry && codexEntryMatchesTokens(entry, searchTokens)) {
+      container.appendChild(createCodexSidebarDetail(entry));
+      return container;
+    }
+  }
   const categoryKeys = Object.keys(grouped).filter((key) => grouped[key] && grouped[key].length > 0);
   if (categoryKeys.length === 0) {
     container.appendChild(createElement('p', emptyClassName, 'No Codex entries match the current filters.'));
@@ -5761,8 +6017,8 @@ function createCodexSidebarElement(options = {}) {
   }
 
   const collapsedCategories =
-    state.ui && state.ui.codexSidebar && Array.isArray(state.ui.codexSidebar.collapsedCategories)
-      ? state.ui.codexSidebar.collapsedCategories
+    Array.isArray(sidebarState.collapsedCategories)
+      ? sidebarState.collapsedCategories
       : [];
 
   categoryKeys
@@ -5805,10 +6061,13 @@ function createCodexSidebarElement(options = {}) {
         const label = mentionCount > 0 ? `${entry.name} · ${mentionCount}` : entry.name;
         const button = createElement(
           'button',
-          `${entryButtonClass}${state.codex.selectedId === entry.id ? ' is-active' : ''}`,
+          `${entryButtonClass}${state.codex.selectedId === entry.id || selectedSidebarEntryId === entry.id ? ' is-active' : ''}`,
           label
         );
-        button.addEventListener('click', () => actions.selectCodexEntry(entry.id));
+        button.addEventListener('click', () => {
+          actions.selectCodexEntry(entry.id);
+          actions.openCodexSidebarEntry(entry.id);
+        });
         item.appendChild(button);
         list.appendChild(item);
       });
@@ -5898,70 +6157,7 @@ function renderCodexView() {
   } else if (!selectedEntry) {
     content.appendChild(createElement('div', 'codex-placeholder', 'Select a Codex entry to view details.'));
   } else {
-    const entryWrapper = createElement('div', 'codex-entry');
-
-    const titleRow = createElement('div', 'codex-entry-title-row');
-    titleRow.appendChild(createElement('h3', 'codex-entry-name', selectedEntry.name));
-    const titleActions = createElement('div', 'codex-entry-actions');
-    const renameButton = createElement('button', 'button-icon', '✎');
-    renameButton.title = 'Rename entry';
-    renameButton.addEventListener('click', () => {
-      const nextName = window.prompt('Rename entry', selectedEntry.name);
-      if (nextName !== null) {
-        actions.renameCodexEntry(selectedEntry.id, nextName);
-      }
-    });
-    titleActions.appendChild(renameButton);
-
-    const deleteButton = createElement('button', 'codex-delete-button', 'Delete');
-    deleteButton.addEventListener('click', () => {
-      if (window.confirm('Delete this Codex entry? This cannot be undone.')) {
-        actions.deleteCodexEntry(selectedEntry.id);
-      }
-    });
-    titleActions.appendChild(deleteButton);
-    titleRow.appendChild(titleActions);
-    entryWrapper.appendChild(titleRow);
-
-    const categoryRow = createElement('div', 'codex-entry-category-row');
-    categoryRow.appendChild(createElement('label', 'codex-entry-label', 'Category'));
-    const categorySelect = document.createElement('select');
-    categorySelect.className = 'codex-entry-select';
-    Object.keys(CATEGORY_LABELS).forEach((key) => {
-      const option = document.createElement('option');
-      option.value = key;
-      option.textContent = CATEGORY_LABELS[key] || key;
-      categorySelect.appendChild(option);
-    });
-    categorySelect.value = selectedEntry.category;
-    categorySelect.addEventListener('change', (event) => {
-      actions.updateCodexCategory(selectedEntry.id, event.target.value);
-    });
-    categoryRow.appendChild(categorySelect);
-    entryWrapper.appendChild(categoryRow);
-
-    const summarySection = createElement('section', 'codex-summary-section');
-    summarySection.appendChild(createElement('label', 'codex-summary-label', 'Summary'));
-    const summaryArea = document.createElement('textarea');
-    summaryArea.className = 'codex-summary-textarea';
-    summaryArea.placeholder = 'Write a short description that captures the essence of this entry.';
-    summaryArea.value = selectedEntry.summary || '';
-    summaryArea.addEventListener('blur', (event) => {
-      actions.updateCodexSummary(selectedEntry.id, event.target.value);
-    });
-    summarySection.appendChild(summaryArea);
-    entryWrapper.appendChild(summarySection);
-
-    entryWrapper.appendChild(renderCodexMediaSection(selectedEntry));
-    entryWrapper.appendChild(renderCodexRelations(selectedEntry));
-
-    if (selectedEntry.category === 'character') {
-      entryWrapper.appendChild(renderCharacterCoreSections(selectedEntry));
-      entryWrapper.appendChild(renderCharacterDynamicSection(selectedEntry, state));
-    } else {
-      entryWrapper.appendChild(renderGenericCodexDetailsSection(selectedEntry, state));
-    }
-
+    const entryWrapper = createCodexEntryContent(selectedEntry);
     content.appendChild(entryWrapper);
   }
 
