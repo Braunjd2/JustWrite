@@ -627,6 +627,19 @@ button {
   border-bottom: 1px solid rgba(69, 162, 158, 0.4);
 }
 
+.outline-add-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: flex-end;
+}
+
+.outline-button-small {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+}
+
 .outline-act-title-row {
   display: flex;
   align-items: center;

@@ -588,7 +588,7 @@ function createInitialState() {
       { id: actId, title: '', order: 1, chapterIds: [chapterId] }
     ],
     chapters: {
-      [chapterId]: { id: chapterId, title: '', order: 1, actId, sceneIds: [sceneId] }
+      [chapterId]: { id: chapterId, title: '', order: 1, actId, sceneIds: [sceneId], isPrologue: false }
     },
     scenes: {
       [sceneId]: {
@@ -750,8 +750,16 @@ function normalizeState(value) {
     const sortedChapters = sortByOrder(rawChapters);
     const newChapterIds = [];
 
-    sortedChapters.forEach((chapter, chapterIndex) => {
-      const newChapterOrder = chapterIndex + 1;
+    let chapterSequence = 1;
+    let prologueSeen = false;
+    sortedChapters.forEach((chapter) => {
+      const isPrologue = Boolean(
+        chapter && (chapter.isPrologue || chapter.order === 0) && !prologueSeen
+      );
+      if (isPrologue) {
+        prologueSeen = true;
+      }
+      const newChapterOrder = isPrologue ? 0 : chapterSequence++;
       const newChapterId = nextChapterId(newActId, newChapterOrder);
       if (chapter && typeof chapter.id === 'string') {
         chapterIdMap.set(chapter.id, newChapterId);
@@ -796,7 +804,8 @@ function normalizeState(value) {
         title: normalizedChapterTitle,
         order: newChapterOrder,
         actId: newActId,
-        sceneIds: newSceneIds
+        sceneIds: newSceneIds,
+        isPrologue
       };
 
       newChapterIds.push(newChapterId);
@@ -1272,12 +1281,32 @@ function refreshOutlineOrdering(draft) {
     if (!Array.isArray(act.chapterIds)) {
       act.chapterIds = [];
     }
-    act.chapterIds.forEach((chapterId, chapterIndex) => {
+    const prologueIds = [];
+    const regularChapterIds = [];
+    act.chapterIds.forEach((chapterId) => {
       const chapter = draft.chapters[chapterId];
       if (!chapter) {
         return;
       }
-      chapter.order = chapterIndex + 1;
+      if (chapter.isPrologue) {
+        prologueIds.push(chapterId);
+      } else {
+        regularChapterIds.push(chapterId);
+      }
+    });
+    act.chapterIds = [...prologueIds, ...regularChapterIds];
+    let chapterOrder = 1;
+    act.chapterIds.forEach((chapterId) => {
+      const chapter = draft.chapters[chapterId];
+      if (!chapter) {
+        return;
+      }
+      if (chapter.isPrologue) {
+        chapter.order = 0;
+      } else {
+        chapter.order = chapterOrder;
+        chapterOrder += 1;
+      }
       if (!Array.isArray(chapter.sceneIds)) {
         chapter.sceneIds = [];
       }
@@ -1376,8 +1405,28 @@ const actions = {
         .filter(Boolean);
       const order = getNextOrder(chaptersForAct, (chapter) => chapter?.order || 0);
       const id = nextChapterId(act.id, order);
-      draft.chapters[id] = { id, title, order, actId: act.id, sceneIds: [] };
+      draft.chapters[id] = { id, title, order, actId: act.id, sceneIds: [], isPrologue: false };
       act.chapterIds.push(id);
+      refreshOutlineOrdering(draft);
+    });
+  },
+  addPrologue(actId, title = '') {
+    updateState((draft) => {
+      const act = draft.acts.find((item) => item.id === actId);
+      if (!act) {
+        return false;
+      }
+      if (!Array.isArray(act.chapterIds)) {
+        act.chapterIds = [];
+      }
+      const hasPrologue = act.chapterIds.some((chapterId) => draft.chapters[chapterId]?.isPrologue);
+      if (hasPrologue) {
+        return false;
+      }
+      const id = nextChapterId(act.id, 0);
+      draft.chapters[id] = { id, title, order: 0, actId: act.id, sceneIds: [], isPrologue: true };
+      act.chapterIds.unshift(id);
+      refreshOutlineOrdering(draft);
     });
   },
   addScene(chapterId, title = '') {
@@ -2067,6 +2116,9 @@ const actions = {
       if (!chapter) {
         return false;
       }
+      if (chapter.isPrologue) {
+        return false;
+      }
       const act = draft.acts.find((item) => item.id === chapter.actId);
       if (!act || !Array.isArray(act.chapterIds)) {
         return false;
@@ -2077,6 +2129,10 @@ const actions = {
       }
       const targetIndex = index + delta;
       if (targetIndex < 0 || targetIndex >= act.chapterIds.length) {
+        return false;
+      }
+      const prologueChapter = act.chapterIds[0] ? draft.chapters[act.chapterIds[0]] : null;
+      if (prologueChapter && prologueChapter.isPrologue && targetIndex === 0) {
         return false;
       }
       act.chapterIds.splice(index, 1);
@@ -3151,7 +3207,19 @@ function buildFullManuscriptText(appState) {
       .filter(Boolean)
       .sort((a, b) => (a.order || 0) - (b.order || 0));
     chapters.forEach((chapter) => {
-      lines.push(`\n## Chapter ${chapter.order || ''}${chapter.title ? `: ${chapter.title}` : ''}`.trim());
+      let chapterHeading;
+      const chapterTitle = typeof chapter.title === 'string' ? chapter.title.trim() : '';
+      if (chapter.isPrologue) {
+        chapterHeading = `Prologue${chapterTitle ? `: ${chapterTitle}` : ''}`;
+      } else {
+        const orderLabel =
+          typeof chapter.order === 'number' && Number.isFinite(chapter.order) && chapter.order > 0
+            ? chapter.order
+            : '';
+        const base = orderLabel !== '' ? `Chapter ${orderLabel}` : 'Chapter';
+        chapterHeading = `${base}${chapterTitle ? `: ${chapterTitle}` : ''}`;
+      }
+      lines.push(`\n## ${chapterHeading}`.trim());
       const scenes = (chapter.sceneIds || [])
         .map((sceneId) => appState.scenes[sceneId])
         .filter(Boolean)
@@ -3926,9 +3994,27 @@ function buildOutlineSidebarContent(outlineUi) {
     );
     actHeader.appendChild(actHeaderText);
 
-    const addChapterButton = createElement('button', 'button-outline', '+ Chapter');
+    const addControls = createElement('div', 'outline-add-buttons');
+    if (actIndex === 0) {
+      const prologueExists = act.chapterIds.some((chapterId) => state.chapters[chapterId]?.isPrologue);
+      const prologueButton = createElement(
+        'button',
+        'button-outline outline-button-small',
+        prologueExists ? 'Prologue added' : '+ Prologue'
+      );
+      if (prologueExists) {
+        prologueButton.disabled = true;
+        prologueButton.title = 'Prologue already exists for this act';
+      } else {
+        prologueButton.addEventListener('click', () => actions.addPrologue(act.id));
+      }
+      addControls.appendChild(prologueButton);
+    }
+    const addChapterClass = actIndex === 0 ? 'button-outline outline-button-small' : 'button-outline';
+    const addChapterButton = createElement('button', addChapterClass, '+ Chapter');
     addChapterButton.addEventListener('click', () => actions.addChapter(act.id));
-    actHeader.appendChild(addChapterButton);
+    addControls.appendChild(addChapterButton);
+    actHeader.appendChild(addControls);
 
     actContainer.appendChild(actHeader);
 
@@ -3941,6 +4027,7 @@ function buildOutlineSidebarContent(outlineUi) {
     if (act.chapterIds.length === 0) {
       chapterList.appendChild(createElement('div', 'outline-empty', 'No chapters in this act.'));
     } else {
+      const prologueIndex = act.chapterIds.findIndex((chapterId) => state.chapters[chapterId]?.isPrologue);
       act.chapterIds.forEach((chapterId, chapterIndex) => {
         const chapter = state.chapters[chapterId];
         if (!chapter) {
@@ -3961,9 +4048,10 @@ function buildOutlineSidebarContent(outlineUi) {
         });
         chapterTitleRow.appendChild(chapterToggle);
 
+        const isPrologueChapter = Boolean(chapter.isPrologue);
         const chapterReorder = createReorderStack({
-          disableUp: chapterIndex === 0,
-          disableDown: chapterIndex === act.chapterIds.length - 1,
+          disableUp: chapterIndex === 0 || isPrologueChapter || (prologueIndex === 0 && chapterIndex === 1),
+          disableDown: chapterIndex === act.chapterIds.length - 1 || isPrologueChapter,
           onUp: () => actions.shiftChapter(chapter.id, -1),
           onDown: () => actions.shiftChapter(chapter.id, 1)
         });
@@ -3973,7 +4061,12 @@ function buildOutlineSidebarContent(outlineUi) {
         chapterTitle.className = 'outline-chapter-chip';
         const chapterPrefix = document.createElement('span');
         chapterPrefix.className = 'outline-title-prefix';
-        chapterPrefix.textContent = `Ch. ${chapter.order}: `;
+        if (isPrologueChapter) {
+          const hasTitle = typeof chapter.title === 'string' && chapter.title.trim().length > 0;
+          chapterPrefix.textContent = hasTitle ? 'Prologue: ' : 'Prologue ';
+        } else {
+          chapterPrefix.textContent = `Ch. ${chapter.order}: `;
+        }
         const chapterEditable = createInlineEditableText(chapter.title || '', {
           onCommit: (next) => actions.renameChapter(chapter.id, next),
           className: 'outline-editable',
@@ -4426,12 +4519,14 @@ function renderManuscriptView() {
 
     chapters.forEach((chapter) => {
       const chapterBlock = createElement('section', 'manuscript-chapter');
+      const chapterTitle = typeof chapter.title === 'string' ? chapter.title.trim() : '';
+      const chapterHeading = chapter.isPrologue
+        ? (chapterTitle.length > 0 ? `Prologue: ${chapterTitle}` : 'Prologue')
+        : (chapterTitle.length > 0
+            ? chapterTitle
+            : `Chapter ${typeof chapter.order === 'number' && chapter.order > 0 ? chapter.order : ''}`.trim());
       chapterBlock.appendChild(
-        createElement(
-          'h3',
-          'manuscript-chapter-title',
-          chapter.title && chapter.title.trim().length > 0 ? chapter.title : `Chapter ${chapter.order}`
-        )
+        createElement('h3', 'manuscript-chapter-title', chapterHeading)
       );
 
       const scenes = (chapter.sceneIds || [])
@@ -5921,12 +6016,15 @@ function formatChapterDisplayTitle(chapter) {
   if (!chapter) {
     return '';
   }
+  const title = typeof chapter.title === 'string' ? chapter.title.trim() : '';
+  if (chapter.isPrologue) {
+    return title.length > 0 ? `Prologue: ${title}` : 'Prologue';
+  }
   const order =
     typeof chapter.order === 'number' && Number.isFinite(chapter.order)
       ? chapter.order
       : extractOrderFromId(chapter.id, /\.C(\d+)$/);
   const orderLabel = order ?? '?';
-  const title = typeof chapter.title === 'string' ? chapter.title.trim() : '';
   return title.length > 0 ? `Ch. ${orderLabel}: ${title}` : `Ch. ${orderLabel}`;
 }
 
