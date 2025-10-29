@@ -63,6 +63,14 @@ const BEAT_GENERATION_SYSTEM_PROMPT = [
   'Beat summaries must be 1-2 sentences focused on what changes in the scene. Avoid meta commentary.'
 ].join('\n');
 
+const SCENE_DRAFT_SYSTEM_PROMPT = [
+  'You are a collaborative fiction writing assistant.',
+  'When asked to write a scene, provide polished narrative prose that follows the supplied beats and context.',
+  'Prioritise vivid sensory detail, character voice, and pacing that fits the outlined mood and stakes.',
+  'Avoid hedging or disclaimers—deliver the requested scene confidently, unless the user explicitly asks for something prohibited.',
+  'Return the scene text only unless the user asks for additional commentary.'
+].join('\n');
+
 function createId(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
 }
@@ -361,6 +369,128 @@ function summarizeSceneForBeats(scene, label) {
   return lines.join('\n');
 }
 
+const MAX_BEAT_OUTLINE_BEATS = 120;
+const MAX_BEAT_SUMMARY_LENGTH = 220;
+
+function truncateForPrompt(text, limit = MAX_BEAT_SUMMARY_LENGTH) {
+  if (typeof text !== 'string') {
+    return '';
+  }
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+function getBeatSummaryLines(scene, indent = '      ') {
+  if (!scene || !Array.isArray(scene.beats) || scene.beats.length === 0) {
+    return [];
+  }
+  return scene.beats
+    .slice()
+    .sort((a, b) => (a.order || 0) - (b.order || 0))
+    .map((beat, index) => {
+      const fallback = typeof beat.title === 'string' && beat.title.trim().length > 0 ? beat.title.trim() : `Beat ${index + 1}`;
+      const summaryRaw = typeof beat.summary === 'string' && beat.summary.trim().length > 0 ? beat.summary : fallback;
+      const summary = truncateForPrompt(summaryRaw);
+      return `${indent}${index + 1}. ${summary}`;
+    });
+}
+
+function buildBeatOutlineSnapshot(appState, maxBeats = MAX_BEAT_OUTLINE_BEATS) {
+  if (!appState) {
+    return '';
+  }
+
+  const lines = [];
+  let beatsIncluded = 0;
+  let truncated = false;
+
+  const acts = [...(appState.acts || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  for (let actIndex = 0; actIndex < acts.length; actIndex += 1) {
+    const act = acts[actIndex];
+    const chapters = (act?.chapterIds || [])
+      .map((chapterId) => appState.chapters[chapterId])
+      .filter(Boolean)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+
+    const actLines = [];
+    for (let chapterIndex = 0; chapterIndex < chapters.length; chapterIndex += 1) {
+      const chapter = chapters[chapterIndex];
+      const scenes = (chapter?.sceneIds || [])
+        .map((sceneId) => appState.scenes[sceneId])
+        .filter(Boolean)
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
+
+      const chapterLines = [];
+      for (let sceneIndex = 0; sceneIndex < scenes.length; sceneIndex += 1) {
+        const scene = scenes[sceneIndex];
+        const beatLines = getBeatSummaryLines(scene);
+        if (beatLines.length === 0) {
+          continue;
+        }
+        if (beatsIncluded >= maxBeats) {
+          truncated = true;
+          break;
+        }
+        const remaining = maxBeats - beatsIncluded;
+        const limitedBeatLines = beatLines.slice(0, remaining);
+        beatsIncluded += limitedBeatLines.length;
+        const sceneLabel = scene?.order || sceneIndex + 1;
+        const sceneTitle = scene?.title || 'Untitled Scene';
+
+        chapterLines.push(`    Scene ${sceneLabel} (${scene?.id || 'S?'}): ${sceneTitle}`);
+        chapterLines.push(...limitedBeatLines);
+        if (limitedBeatLines.length < beatLines.length) {
+          chapterLines.push('      ... (additional beats omitted)');
+          truncated = true;
+          break;
+        }
+      }
+
+      if (chapterLines.length > 0) {
+        const chapterLabel = chapter?.order || chapterIndex + 1;
+        actLines.push(`  Chapter ${chapterLabel} (${chapter?.id || 'C?'}): ${chapter?.title || 'Untitled Chapter'}`);
+        actLines.push(...chapterLines);
+      }
+
+      if (truncated) {
+        break;
+      }
+    }
+
+    if (actLines.length > 0) {
+      const actLabel = act?.order || actIndex + 1;
+      lines.push(`Act ${actLabel} (${act?.id || 'A?'}): ${act?.title || 'Untitled Act'}`);
+      lines.push(...actLines);
+    }
+
+    if (truncated) {
+      break;
+    }
+  }
+
+  if (beatsIncluded === 0) {
+    return '';
+  }
+  if (truncated) {
+    lines.push('... Beat outline truncated for brevity.');
+  }
+  return lines.join('\n');
+}
+
+function buildManuscriptExcerpt(text, limit = 900) {
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return '';
+  }
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, limit - 3))}...`;
+}
+
 function extractMentionsFromText(text) {
   if (typeof text !== 'string' || text.trim().length === 0) {
     return [];
@@ -498,6 +628,7 @@ function createInitialState() {
       scanStatus: null,
       selectionContext: null,
       generatingBeats: false,
+      generatingSceneDraft: false,
       codexSearch: '',
       codexSidebar: {
         collapsedCategories: []
@@ -810,6 +941,7 @@ function normalizeState(value) {
     showSettings: Boolean(uiValue.showSettings),
     scanStatus: null,
     generatingBeats: false,
+    generatingSceneDraft: false,
     codexSearch: codexSearchValue,
     codexSidebar: {
       collapsedCategories
@@ -1707,6 +1839,111 @@ const actions = {
       }, { skipHistory: true });
     }
   },
+  async generateSceneDraft(sceneId) {
+    if (!state || state.ui.generatingSceneDraft) {
+      return;
+    }
+    const scene = state.scenes[sceneId];
+    if (!scene) {
+      return;
+    }
+    if (!Array.isArray(scene.beats) || scene.beats.length === 0) {
+      updateState((draft) => {
+        if (draft.ui.chat) {
+          draft.ui.chat.error = 'Add beats to this scene before generating a draft.';
+        }
+      }, { skipHistory: true });
+      return;
+    }
+
+    const providerId = getProviderId('assistant');
+    if (!providerId) {
+      updateState((draft) => {
+        if (draft.ui.chat) {
+          draft.ui.chat.error = 'Select a writing provider in Settings before generating a draft.';
+        }
+      }, { skipHistory: true });
+      return;
+    }
+
+    const apiKey = state.settings.apiKeys ? state.settings.apiKeys[providerId] : null;
+    if (!apiKey || apiKey.trim().length === 0) {
+      updateState((draft) => {
+        if (draft.ui.chat) {
+          draft.ui.chat.error = 'Add an API key for the writing provider in Settings before generating a draft.';
+        }
+      }, { skipHistory: true });
+      return;
+    }
+
+    const neighbors = findSceneNeighbors(state, sceneId);
+    const previousSummary = summarizeSceneForBeats(neighbors.previous, 'Previous scene');
+    const nextSummary = summarizeSceneForBeats(neighbors.next, 'Next scene');
+    const selectionContext =
+      state.ui.selectionContext && state.ui.selectionContext.sceneId === sceneId ? state.ui.selectionContext.text : '';
+    const chatInput = state.ui.chatInput ? state.ui.chatInput.trim() : '';
+    let latestUserMessage = '';
+    if (state.chat && Array.isArray(state.chat.messages)) {
+      for (let index = state.chat.messages.length - 1; index >= 0; index -= 1) {
+        const message = state.chat.messages[index];
+        if (message && message.role === 'user' && typeof message.content === 'string' && message.content.trim().length > 0) {
+          latestUserMessage = message.content.trim();
+          break;
+        }
+      }
+    }
+    const userGuidance = chatInput || latestUserMessage || '';
+
+    updateState((draft) => {
+      draft.ui.generatingSceneDraft = true;
+      if (draft.ui.chat) {
+        draft.ui.chat.error = null;
+      }
+    }, { skipHistory: true });
+
+    try {
+      const prompt = buildSceneDraftPrompt(state, scene, {
+        storyOutline: buildBeatOutlineSnapshot(state),
+        codexSummary: buildCodexSummary(state, 12),
+        previousSummary,
+        nextSummary,
+        selectionContext,
+        userGuidance,
+        sceneExcerpt: buildManuscriptExcerpt(scene.text || '', 400)
+      });
+
+      const reply = await requestChatCompletion({
+        providerId,
+        apiKey,
+        messages: [{ role: 'user', content: prompt }],
+        systemPrompt: SCENE_DRAFT_SYSTEM_PROMPT,
+        temperature: 0.65
+      });
+
+      const draftText = typeof reply === 'string' ? reply.trim() : JSON.stringify(reply, null, 2);
+      updateState((draft) => {
+        const targetScene = draft.scenes[sceneId];
+        if (!targetScene) {
+          return false;
+        }
+        targetScene.text = draftText;
+        targetScene.wordCount = calculateWordCount(draftText);
+        targetScene.draftStatus = targetScene.wordCount === 0 ? 'empty' : 'drafted';
+        targetScene.lastUpdated = new Date().toISOString();
+        draft.ui.generatingSceneDraft = false;
+        draft.ui.showBeats = false;
+      });
+    } catch (error) {
+      console.error('Scene draft generation failed', error);
+      updateState((draft) => {
+        draft.ui.generatingSceneDraft = false;
+        if (draft.ui.chat) {
+          draft.ui.chat.error =
+            error && error.message ? `Scene draft failed: ${error.message}` : 'Scene draft failed.';
+        }
+      }, { skipHistory: true });
+    }
+  },
   shiftAct(actId, delta) {
     updateState((draft) => {
       const acts = draft.acts;
@@ -2540,6 +2777,264 @@ function downloadFile(filename, data, mimeType = 'text/plain') {
     console.warn('Failed to download file', error);
     window.alert('Unable to trigger download. Check browser permissions.');
   }
+}
+
+const CLIPBOARD_SHORTCUT_KEYS = new Set(['c', 'v', 'x']);
+const TEXTUAL_INPUT_TYPES = new Set(['text', 'search', 'url', 'tel', 'password', 'email', 'number']);
+
+function isTextualInput(element) {
+  if (!element || element.tagName !== 'INPUT') {
+    return false;
+  }
+  const type = (element.type || '').toLowerCase();
+  if (type === '') {
+    return true;
+  }
+  return TEXTUAL_INPUT_TYPES.has(type);
+}
+
+function isEditableTarget(element) {
+  if (!element) {
+    return false;
+  }
+  if (element.tagName === 'TEXTAREA') {
+    return true;
+  }
+  if (isTextualInput(element)) {
+    return true;
+  }
+  return Boolean(element.isContentEditable);
+}
+
+function hasEditableSelection(element) {
+  if (!element || !isEditableTarget(element)) {
+    return false;
+  }
+  if (element.tagName === 'TEXTAREA' || element.tagName === 'INPUT') {
+    const start = element.selectionStart;
+    const end = element.selectionEnd;
+    return typeof start === 'number' && typeof end === 'number' && end > start;
+  }
+  if (element.isContentEditable) {
+    const selection = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null;
+    if (!selection || selection.isCollapsed) {
+      return false;
+    }
+    const anchorNode = selection.anchorNode;
+    return anchorNode instanceof Node && element.contains(anchorNode);
+  }
+  return false;
+}
+
+function canCutFrom(element) {
+  if (!isEditableTarget(element)) {
+    return false;
+  }
+  if (element.readOnly || element.disabled) {
+    return false;
+  }
+  return hasEditableSelection(element);
+}
+
+function canPasteInto(element) {
+  if (!isEditableTarget(element)) {
+    return false;
+  }
+  if (element.readOnly || element.disabled) {
+    return false;
+  }
+  return true;
+}
+
+function tryExecCommand(command) {
+  if (typeof document === 'undefined' || typeof document.execCommand !== 'function') {
+    return false;
+  }
+  try {
+    return document.execCommand(command);
+  } catch (error) {
+    return false;
+  }
+}
+
+function focusEditable(target) {
+  if (!target || typeof target.focus !== 'function') {
+    return;
+  }
+  if (typeof document !== 'undefined' && document.activeElement === target) {
+    return;
+  }
+  try {
+    target.focus({ preventScroll: true });
+  } catch (error) {
+    target.focus();
+  }
+}
+
+function insertTextAtCursor(target, text) {
+  if (!target || typeof text !== 'string') {
+    return false;
+  }
+  focusEditable(target);
+  if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
+    const start = target.selectionStart;
+    const end = target.selectionEnd;
+    if (typeof start !== 'number' || typeof end !== 'number') {
+      return false;
+    }
+    if (typeof target.setRangeText === 'function') {
+      target.setRangeText(text, start, end, 'end');
+    } else {
+      const value = typeof target.value === 'string' ? target.value : '';
+      target.value = `${value.slice(0, start)}${text}${value.slice(end)}`;
+      const nextCursor = start + text.length;
+      target.selectionStart = nextCursor;
+      target.selectionEnd = nextCursor;
+    }
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }
+  if (target.isContentEditable) {
+    try {
+      return document.execCommand('insertText', false, text);
+    } catch (error) {
+      return false;
+    }
+  }
+  return false;
+}
+
+function extractSelectedText(activeElement) {
+  const selection = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null;
+  if (selection && !selection.isCollapsed) {
+    return selection.toString();
+  }
+  if (!activeElement || (activeElement.tagName !== 'TEXTAREA' && activeElement.tagName !== 'INPUT')) {
+    return '';
+  }
+  const start = activeElement.selectionStart;
+  const end = activeElement.selectionEnd;
+  if (typeof start !== 'number' || typeof end !== 'number' || end <= start) {
+    return '';
+  }
+  const value = typeof activeElement.value === 'string' ? activeElement.value : '';
+  return value.slice(start, end);
+}
+
+function deleteEditableSelection(target) {
+  if (!target || !hasEditableSelection(target)) {
+    return;
+  }
+  if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
+    insertTextAtCursor(target, '');
+    return;
+  }
+  if (target.isContentEditable) {
+    tryExecCommand('delete');
+  }
+}
+
+function applyClipboardPaste(target) {
+  if (!target) {
+    return false;
+  }
+  focusEditable(target);
+  const execResult = tryExecCommand('paste');
+  if (execResult) {
+    return true;
+  }
+  if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+    return navigator.clipboard
+      .readText()
+      .then((text) => {
+        if (typeof text !== 'string') {
+          return false;
+        }
+        return insertTextAtCursor(target, text);
+      })
+      .catch(() => false);
+  }
+  return false;
+}
+
+let clipboardShortcutsRegistered = false;
+
+function setupClipboardShortcuts() {
+  if (clipboardShortcutsRegistered || typeof document === 'undefined') {
+    return;
+  }
+  const handler = (event) => {
+    if (event.defaultPrevented) {
+      return;
+    }
+    if (!(event.metaKey || event.ctrlKey)) {
+      return;
+    }
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+    if (!CLIPBOARD_SHORTCUT_KEYS.has(key)) {
+      return;
+    }
+    const activeElement = document.activeElement;
+    const globalSelection = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null;
+    if (key === 'c') {
+      const hasSelection =
+        (globalSelection && !globalSelection.isCollapsed) ||
+        (activeElement && isEditableTarget(activeElement) && hasEditableSelection(activeElement));
+      if (!hasSelection) {
+        return;
+      }
+      const success = tryExecCommand('copy');
+      if (success) {
+        event.preventDefault();
+        return;
+      }
+      if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        const text = extractSelectedText(activeElement);
+        if (text) {
+          navigator.clipboard.writeText(text).catch(() => {});
+          event.preventDefault();
+        }
+      }
+      return;
+    }
+    if (key === 'x') {
+      if (!canCutFrom(activeElement)) {
+        return;
+      }
+      const success = tryExecCommand('cut');
+      if (success) {
+        event.preventDefault();
+        return;
+      }
+      if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        const text = extractSelectedText(activeElement);
+        if (text) {
+          navigator.clipboard
+            .writeText(text)
+            .then(() => {
+              deleteEditableSelection(activeElement);
+            })
+            .catch(() => {});
+          event.preventDefault();
+        }
+      }
+      return;
+    }
+    if (key === 'v') {
+      if (!canPasteInto(activeElement)) {
+        return;
+      }
+      const result = applyClipboardPaste(activeElement);
+      if (result && typeof result.then === 'function') {
+        event.preventDefault();
+        result.catch(() => {});
+      } else if (result) {
+        event.preventDefault();
+      }
+    }
+  };
+  document.addEventListener('keydown', handler);
+  clipboardShortcutsRegistered = true;
 }
 
 function buildFullManuscriptText(appState) {
@@ -3638,6 +4133,8 @@ function renderWorkspace() {
   const isQuickScanRunning = Boolean(state.ui.scanStatus && state.ui.scanStatus.state === 'running');
   const codexProviderId = getProviderId('codex');
   const hasCodexKey = hasApiKeyFor(codexProviderId);
+  const assistantProviderId = getProviderId('assistant');
+  const hasAssistantKey = hasApiKeyFor(assistantProviderId);
   const scanQuickButton = createQuickActionButton(isQuickScanRunning ? 'Scanning…' : 'Scan scene', () =>
     actions.startSceneScan(selectedScene.id)
   );
@@ -3661,6 +4158,20 @@ function renderWorkspace() {
     scanToggleButton.title = 'Scene status visible while scanning';
   }
   quickActions.appendChild(scanToggleButton);
+
+  const sceneIsEmpty = !selectedScene.text || selectedScene.text.trim().length === 0;
+  const sceneHasBeats = Array.isArray(selectedScene.beats) && selectedScene.beats.length > 0;
+  if (sceneIsEmpty && sceneHasBeats) {
+    const draftButton = createQuickActionButton(
+      state.ui.generatingSceneDraft ? 'Drafting…' : 'Draft scene',
+      () => actions.generateSceneDraft(selectedScene.id)
+    );
+    draftButton.disabled = state.ui.generatingSceneDraft || !hasAssistantKey;
+    draftButton.title = hasAssistantKey
+      ? 'Use the AI assistant to draft this scene based on its beats.'
+      : 'Add an API key for the writing provider in Settings to generate scene drafts.';
+    quickActions.appendChild(draftButton);
+  }
   headerRight.appendChild(quickActions);
 
   header.appendChild(headerLeft);
@@ -4087,6 +4598,56 @@ function buildBeatGenerationPrompt(appState, scene, options = {}) {
   return lines.join('\n\n');
 }
 
+function buildSceneDraftPrompt(appState, scene, options = {}) {
+  if (!appState || !scene) {
+    return '';
+  }
+
+  const lines = [
+    `Draft the full scene "${scene.title || 'Untitled Scene'}" in polished narrative prose.`,
+    'Target roughly 600-900 words unless the user specifies otherwise. Maintain continuity with the established story voice.'
+  ];
+
+  const beatLines = getBeatSummaryLines(scene, '    ');
+  if (beatLines.length > 0) {
+    lines.push('Scene beats (follow these sequentially):', beatLines.join('\n'));
+  }
+
+  if (options.previousSummary) {
+    lines.push(options.previousSummary);
+  }
+  if (options.nextSummary) {
+    lines.push(options.nextSummary);
+  }
+
+  if (options.storyOutline) {
+    lines.push('Story outline snapshot:', options.storyOutline);
+  }
+
+  if (options.codexSummary) {
+    lines.push('Relevant Codex highlights:', options.codexSummary);
+  }
+
+  if (options.selectionContext) {
+    lines.push('Author notes / highlighted excerpt:', options.selectionContext);
+  }
+
+  if (options.userGuidance) {
+    lines.push('Author guidance:', options.userGuidance);
+  }
+
+  if (options.sceneExcerpt) {
+    lines.push('Existing manuscript excerpt:', options.sceneExcerpt);
+  }
+
+  lines.push(
+    'Write the scene in third-person unless the beats indicate otherwise, keeping character voice and mood consistent.',
+    'Return only the completed scene text with line breaks where appropriate.'
+  );
+
+  return lines.join('\n\n');
+}
+
 function extractJsonPayload(raw) {
   if (raw === null || raw === undefined) {
     throw new Error('Empty response from model');
@@ -4146,30 +4707,36 @@ function buildCodexSummary(appState, limit = 12) {
 
 function buildChatSystemPrompt(appState) {
   const lines = [
-    'You are the SimpleWriter assistant. Use the provided outline, beats, and manuscript excerpts to stay grounded in the story world.',
-    'Never invent new facts. Quote or paraphrase from the supplied context when referencing story details.',
-    'When rewriting text, respond with the rewritten passage only unless commentary is explicitly requested.'
+    'You are the SimpleWriter assistant. Treat beat summaries as the authoritative outline for the story world.',
+    'Your priority is to comply with the author’s requests: draft scenes, continue prose, revise text, or brainstorm on command.',
+    'Use beats, outline data, and supplied excerpts to stay grounded, but when details are missing, make confident creative choices that fit the established tone.',
+    'Never refuse direct writing or planning tasks unless the user asks for something explicitly disallowed.',
+    'When the user asks for prose, respond with the requested text first, keeping any commentary brief and optional.'
   ];
+
+  const beatOutline = buildBeatOutlineSnapshot(appState);
+  if (beatOutline) {
+    lines.push('Story beat outline (primary reference):', beatOutline);
+  }
 
   const outline = buildOutlineSummary(appState);
   if (outline) {
-    lines.push('Outline snapshot:', outline);
+    lines.push('Outline snapshot (secondary reference):', outline);
   }
 
   const selectedScene = appState.selectedSceneId ? appState.scenes[appState.selectedSceneId] : null;
   if (selectedScene) {
-    lines.push(
-      `Current scene (${selectedScene.id || 'S?'} · ${selectedScene.title || 'Untitled Scene'} — ${selectedScene.wordCount || 0} words):`,
-      selectedScene.text || '(Scene is currently empty.)'
-    );
+    const sceneHeading = `Current scene (${selectedScene.id || 'S?'} · ${selectedScene.title || 'Untitled Scene'} — ${selectedScene.wordCount || 0} words)`;
+    lines.push(sceneHeading);
 
-    if (Array.isArray(selectedScene.beats) && selectedScene.beats.length > 0) {
-      const beatLines = selectedScene.beats
-        .slice()
-        .sort((a, b) => (a.order || 0) - (b.order || 0))
-        .map((beat, index) => `  • Beat ${beat.order || index + 1}: ${beat.title || 'Untitled Beat'}${beat.summary ? ` — ${beat.summary}` : ''}`)
-        .join('\n');
-      lines.push('Current scene beats:', beatLines);
+    const currentBeatLines = getBeatSummaryLines(selectedScene);
+    if (currentBeatLines.length > 0) {
+      lines.push('Current scene beats:', currentBeatLines.join('\n'));
+    }
+
+    const sceneExcerpt = buildManuscriptExcerpt(selectedScene.text || '');
+    if (sceneExcerpt) {
+      lines.push('Current scene manuscript excerpt:', sceneExcerpt);
     }
 
     const orderedSceneIds = getOrderedSceneIds(appState);
@@ -4177,19 +4744,29 @@ function buildChatSystemPrompt(appState) {
     if (currentIndex > 0) {
       const previousScene = appState.scenes[orderedSceneIds[currentIndex - 1]];
       if (previousScene) {
-        lines.push(
-          `Previous scene (${previousScene.id || 'S?'} · ${previousScene.title || 'Untitled Scene'}):`,
-          previousScene.text || '(Scene is currently empty.)'
-        );
+        lines.push(`Previous scene (${previousScene.id || 'S?'} · ${previousScene.title || 'Untitled Scene'})`);
+        const previousBeats = getBeatSummaryLines(previousScene);
+        if (previousBeats.length > 0) {
+          lines.push('Previous scene beats:', previousBeats.join('\n'));
+        }
+        const previousExcerpt = buildManuscriptExcerpt(previousScene.text || '', 600);
+        if (previousExcerpt) {
+          lines.push('Previous scene manuscript excerpt:', previousExcerpt);
+        }
       }
     }
     if (currentIndex >= 0 && currentIndex < orderedSceneIds.length - 1) {
       const nextScene = appState.scenes[orderedSceneIds[currentIndex + 1]];
       if (nextScene) {
-        lines.push(
-          `Next scene (${nextScene.id || 'S?'} · ${nextScene.title || 'Untitled Scene'}):`,
-          nextScene.text || '(Scene is currently empty.)'
-        );
+        lines.push(`Next scene (${nextScene.id || 'S?'} · ${nextScene.title || 'Untitled Scene'})`);
+        const nextBeats = getBeatSummaryLines(nextScene);
+        if (nextBeats.length > 0) {
+          lines.push('Next scene beats:', nextBeats.join('\n'));
+        }
+        const nextExcerpt = buildManuscriptExcerpt(nextScene.text || '', 600);
+        if (nextExcerpt) {
+          lines.push('Next scene manuscript excerpt:', nextExcerpt);
+        }
       }
     }
   }
@@ -4936,8 +5513,10 @@ function renderAssistantPanel() {
     }
     thread.appendChild(bubble);
   });
-  thread.scrollTop = thread.scrollHeight;
   panel.appendChild(thread);
+  requestAnimationFrame(() => {
+    thread.scrollTop = thread.scrollHeight;
+  });
 
   const chatState = state.ui.chat || { isSending: false, error: null };
   const selectedScene = state.selectedSceneId ? state.scenes[state.selectedSceneId] : null;
@@ -5925,6 +6504,7 @@ function renderAll() {
   renderSettings();
 }
 
+setupClipboardShortcuts();
 setupSidebarResizers();
 applyLayoutWidths();
 renderAll();

@@ -22,6 +22,13 @@ const MIME_TYPES = {
 const PORT = Number(process.env.PORT) || 5173;
 const HOST = process.env.HOST || '127.0.0.1';
 
+const PROXY_ALLOWLIST = new Set([
+  'https://api.openai.com',
+  'https://api.anthropic.com',
+  'https://generativelanguage.googleapis.com',
+  'https://api.x.ai'
+]);
+
 async function resolveFilePath(url) {
   const cleanUrl = url.split('?')[0].split('#')[0];
   const targetPath = cleanUrl === '/' ? 'index.html' : cleanUrl.replace(/^\/+/, '');
@@ -37,9 +44,104 @@ async function resolveFilePath(url) {
   }
 }
 
+function isProxyAllowed(endpoint) {
+  try {
+    const parsed = new URL(endpoint);
+    if (parsed.protocol !== 'https:') {
+      return false;
+    }
+    const origin = `${parsed.protocol}//${parsed.host}`;
+    return PROXY_ALLOWLIST.has(origin);
+  } catch (error) {
+    return false;
+  }
+}
+
+async function handleProxyRequest(request, response) {
+  if (request.method === 'OPTIONS') {
+    response.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type'
+    });
+    response.end();
+    return;
+  }
+
+  if (request.method !== 'POST') {
+    response.writeHead(405, {
+      'Access-Control-Allow-Origin': '*',
+      'Content-Type': 'application/json; charset=utf-8'
+    });
+    response.end(JSON.stringify({ error: 'Method not allowed' }));
+    return;
+  }
+
+  const chunks = [];
+  request.on('data', (chunk) => {
+    chunks.push(chunk);
+  });
+
+  request.on('end', async () => {
+    let payload = {};
+    try {
+      const rawBody = Buffer.concat(chunks).toString('utf-8') || '{}';
+      payload = JSON.parse(rawBody);
+    } catch (error) {
+      response.writeHead(400, {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/json; charset=utf-8'
+      });
+      response.end(JSON.stringify({ error: 'Invalid JSON payload' }));
+      return;
+    }
+
+    const { endpoint, method = 'POST', headers = {}, body = null } = payload;
+    if (typeof endpoint !== 'string' || !isProxyAllowed(endpoint)) {
+      response.writeHead(403, {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/json; charset=utf-8'
+      });
+      response.end(JSON.stringify({ error: 'Endpoint not allowed for proxy', endpoint }));
+      return;
+    }
+
+    try {
+      console.log(`[proxy] ${method} ${endpoint}`);
+      const upstreamResponse = await fetch(endpoint, {
+        method,
+        headers,
+        body: body === null || body === undefined ? undefined : body
+      });
+
+      const contentType = upstreamResponse.headers.get('content-type') || 'application/octet-stream';
+      const buffer = Buffer.from(await upstreamResponse.arrayBuffer());
+      console.log(`[proxy] ${endpoint} -> ${upstreamResponse.status}`);
+      response.writeHead(upstreamResponse.status, {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*'
+      });
+      response.end(buffer);
+    } catch (error) {
+      console.error('[proxy] request failed', error);
+      response.writeHead(502, {
+        'Access-Control-Allow-Origin': '*',
+        'Content-Type': 'application/json; charset=utf-8'
+      });
+      response.end(JSON.stringify({ error: 'Proxy request failed' }));
+    }
+  });
+}
+
 const server = createServer(async (request, response) => {
   if (!request.url) {
     response.writeHead(400).end('Bad Request');
+    return;
+  }
+
+  const cleanUrl = request.url.split('?')[0];
+  if (cleanUrl === '/api/proxy') {
+    await handleProxyRequest(request, response);
     return;
   }
 

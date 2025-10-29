@@ -2,7 +2,8 @@ const PROVIDER_MAP = {
   'openai:gpt-5': { vendor: 'openai', model: 'gpt-4.1' },
   'openai:gpt-4.1': { vendor: 'openai', model: 'gpt-4.1' },
   'openai:gpt-4o-legacy': { vendor: 'openai', model: 'gpt-4o-2024-05-13' },
-  'anthropic:sonnet-4.5': { vendor: 'anthropic', model: 'claude-3-5-sonnet-20241022' },
+  // Anthropic markets this as Claude 4.5 Sonnet; the API still uses the 3.5 identifier.
+  'anthropic:sonnet-4.5': { vendor: 'anthropic', model: 'claude-sonnet-4-5-20250929' },
   'anthropic:sonnet-4': { vendor: 'anthropic', model: 'claude-3-0-sonnet-20240229' },
   'anthropic:opus-4.1': { vendor: 'anthropic', model: 'claude-3-opus-20240229' },
   'google:gemini-2.5': { vendor: 'google', model: 'gemini-2.0-flash-exp' },
@@ -61,6 +62,53 @@ const CHAT_DEFAULT_SYSTEM_PROMPT = [
   'Never invent new facts; quote or paraphrase from the supplied context when referencing story details.',
   'When rewriting text, return only the rewritten passage unless additional commentary is explicitly requested.'
 ].join('\n');
+
+const DEFAULT_PROXY_ENDPOINT = '/api/proxy';
+
+function resolveProxyEndpoint() {
+  if (typeof window === 'undefined') {
+    return DEFAULT_PROXY_ENDPOINT;
+  }
+  const { origin } = window.location;
+  if (!origin || origin.startsWith('file://')) {
+    return 'http://127.0.0.1:5173/api/proxy';
+  }
+  return `${origin.replace(/\/$/, '')}/api/proxy`;
+}
+
+const PROXY_ENDPOINT = resolveProxyEndpoint();
+
+async function performProviderRequest(requestConfig, expectJson) {
+  const proxyResponse = await fetch(PROXY_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      endpoint: requestConfig.endpoint,
+      method: requestConfig.method || 'POST',
+      headers: requestConfig.headers,
+      body: requestConfig.body
+    })
+  });
+
+  const contentType = proxyResponse.headers.get('content-type') || '';
+  const rawText = await proxyResponse.text();
+
+  if (!proxyResponse.ok) {
+    throw new Error(`AI request failed (${proxyResponse.status}): ${rawText.slice(0, 400)}`);
+  }
+
+  if (expectJson || contentType.includes('application/json')) {
+    try {
+      return rawText ? JSON.parse(rawText) : {};
+    } catch (error) {
+      throw new Error('Failed to parse AI response JSON');
+    }
+  }
+
+  return rawText;
+}
 
 function resolveProvider(providerId) {
   return PROVIDER_MAP[providerId] || null;
@@ -258,12 +306,12 @@ function buildChatBodyForProvider(provider, { system, messages, responseFormat, 
 
   if (provider.vendor === 'anthropic') {
     return {
-      max_output_tokens: 2048,
+      max_tokens: responseFormat?.type === 'json_object' ? 1024 : 2048,
       temperature,
       system,
       messages: messages.map((message) => ({
         role: message.role === 'assistant' ? 'assistant' : 'user',
-        content: message.content
+        content: [{ type: 'text', text: message.content }]
       }))
     };
   }
@@ -301,6 +349,7 @@ function buildRequestConfig(provider, baseBody, apiKey, expectJson) {
   let headers = { 'Content-Type': 'application/json' };
   let body;
   let skipAuthHeader = false;
+  let method = 'POST';
 
   if (provider.vendor === 'openai') {
     endpoint = 'https://api.openai.com/v1/chat/completions';
@@ -329,6 +378,7 @@ function buildRequestConfig(provider, baseBody, apiKey, expectJson) {
   }
 
   return {
+    method,
     endpoint,
     headers,
     body,
@@ -422,19 +472,8 @@ export async function requestSceneScan({
   const requestConfig = buildRequestConfig(provider, body, apiKey, true);
 
   onProgress?.('requesting', 'Sending scene to AI provider');
-  const response = await fetch(requestConfig.endpoint, {
-    method: 'POST',
-    headers: requestConfig.headers,
-    body: requestConfig.body
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`AI request failed (${response.status}): ${errorText.slice(0, 400)}`);
-  }
-
+  const raw = await performProviderRequest(requestConfig, true);
   onProgress?.('receiving', 'Received AI response, parsing content');
-  const raw = await response.json();
 
   const rawText = extractProviderResponse(provider, raw);
   const payload = parseJsonFromText(rawText);
@@ -466,28 +505,12 @@ export async function requestChatCompletion({
 
   const requestConfig = buildRequestConfig(provider, body, apiKey, responseFormat?.type === 'json_object');
 
-  const response = await fetch(requestConfig.endpoint, {
-    method: 'POST',
-    headers: requestConfig.headers,
-    body: requestConfig.body
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`AI request failed (${response.status}): ${errorText.slice(0, 400)}`);
-  }
-
   if (responseFormat?.type === 'json_object') {
-    const raw = await response.json();
+    const raw = await performProviderRequest(requestConfig, true);
     const rawText = extractProviderResponse(provider, raw);
     return parseJsonFromText(rawText);
   }
 
-  if (provider.vendor === 'google') {
-    const raw = await response.json();
-    return extractGoogleResponse(raw);
-  }
-
-  const raw = await response.json();
+  const raw = await performProviderRequest(requestConfig, true);
   return extractProviderResponse(provider, raw);
 }
