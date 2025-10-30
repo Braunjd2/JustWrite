@@ -9,70 +9,27 @@ import { requestSceneScan, requestChatCompletion } from './ai.js';
 import { createId, nextActId, nextBeatId, nextChapterId, nextSceneId } from './lib/id.js';
 import { getNextOrder, sortByOrder } from './lib/array/order.js';
 import { calculateWordCount } from './lib/text/count.js';
+import {
+  CATEGORY_LABELS,
+  CHARACTER_BACKGROUND_FIELDS,
+  CHARACTER_BACKGROUND_LABELS,
+  CHARACTER_CORE_SECTION_KEYS,
+  CHARACTER_CORE_SECTION_LABELS,
+  DEFAULT_SIDEBAR_WIDTHS,
+  SIDEBAR_LIMITS,
+  LAYOUT_RESIZER_WIDTH,
+  LAYOUT_RESIZER_COUNT,
+  MAX_MEDIA_SIZE_BYTES,
+  AI_PROVIDERS,
+  PROVIDER_ROLES,
+  DEFAULT_PROVIDER,
+  PERSIST_DEBOUNCE_MS,
+  BEAT_GENERATION_SYSTEM_PROMPT,
+  SCENE_DRAFT_SYSTEM_PROMPT,
+  MAX_BEAT_OUTLINE_BEATS,
+  MAX_BEAT_SUMMARY_LENGTH
+} from './constants.js';
 
-const CATEGORY_LABELS = {
-  character: 'Characters',
-  place: 'Places',
-  item: 'Items',
-  lore: 'Lore'
-};
-
-const CHARACTER_BACKGROUND_FIELDS = ['age', 'gender', 'species', 'faction'];
-
-const CHARACTER_BACKGROUND_LABELS = {
-  age: 'Age',
-  gender: 'Gender',
-  species: 'Species',
-  faction: 'Faction'
-};
-
-const CHARACTER_CORE_SECTION_KEYS = ['appearance', 'personality', 'dialogueVoice', 'powersAbilities', 'relationships'];
-
-const CHARACTER_CORE_SECTION_LABELS = {
-  appearance: 'Appearance',
-  personality: 'Personality',
-  dialogueVoice: 'Dialogue & Voice',
-  powersAbilities: 'Powers & Abilities',
-  relationships: 'Relationships'
-};
-
-const DEFAULT_SIDEBAR_WIDTHS = { left: 320, right: 280 };
-const SIDEBAR_LIMITS = {
-  left: { min: 240, max: 560 },
-  right: { min: 220, max: 480 },
-  centerMin: 520
-};
-const LAYOUT_RESIZER_WIDTH = 12;
-const LAYOUT_RESIZER_COUNT = 2;
-const MAX_MEDIA_SIZE_BYTES = 2 * 1024 * 1024;
-
-const AI_PROVIDERS = [
-  { id: 'openai:gpt-5', label: 'OpenAI · GPT-5' },
-  { id: 'openai:gpt-4.1', label: 'OpenAI · GPT-4.1' },
-  { id: 'openai:gpt-4o-legacy', label: 'OpenAI · GPT-4o Legacy' },
-  { id: 'anthropic:sonnet-4.5', label: 'Anthropic · Claude Sonnet 4.5' },
-  { id: 'anthropic:sonnet-4', label: 'Anthropic · Claude Sonnet 4' },
-  { id: 'anthropic:opus-4.1', label: 'Anthropic · Claude Opus 4.1' },
-  { id: 'google:gemini-2.5', label: 'Google · Gemini 2.5' },
-  { id: 'xai:grok-latest', label: 'xAI · Grok (latest)' }
-];
-
-const PROVIDER_ROLES = ['assistant', 'codex'];
-const DEFAULT_PROVIDER = AI_PROVIDERS[0].id;
-const PERSIST_DEBOUNCE_MS = 400;
-const BEAT_GENERATION_SYSTEM_PROMPT = [
-  'You are a story structure assistant who creates concise scene beats that track character intent, conflict, and change.',
-  'Always respond with strictly valid JSON shaped as {"beats":[{"title": string, "summary": string}]} with 4-6 beats.',
-  'Beat summaries must be 1-2 sentences focused on what changes in the scene. Avoid meta commentary.'
-].join('\n');
-
-const SCENE_DRAFT_SYSTEM_PROMPT = [
-  'You are a collaborative fiction writing assistant.',
-  'When asked to write a scene, provide polished narrative prose that follows the supplied beats and context.',
-  'Prioritise vivid sensory detail, character voice, and pacing that fits the outlined mood and stakes.',
-  'Avoid hedging or disclaimers—deliver the requested scene confidently, unless the user explicitly asks for something prohibited.',
-  'Return the scene text only unless the user asks for additional commentary.'
-].join('\n');
 
 function createInlineEditableText(initialValue, options = {}) {
   const { onCommit, className = '', placeholder = '', allowEmpty = false } = options;
@@ -345,9 +302,6 @@ function summarizeSceneForBeats(scene, label) {
 
   return lines.join('\n');
 }
-
-const MAX_BEAT_OUTLINE_BEATS = 120;
-const MAX_BEAT_SUMMARY_LENGTH = 220;
 
 function truncateForPrompt(text, limit = MAX_BEAT_SUMMARY_LENGTH) {
   if (typeof text !== 'string') {
