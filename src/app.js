@@ -6,6 +6,9 @@ import {
   clearStateFromDb
 } from './storage.js';
 import { requestSceneScan, requestChatCompletion } from './ai.js';
+import { createId, nextActId, nextBeatId, nextChapterId, nextSceneId } from './lib/id.js';
+import { getNextOrder, sortByOrder } from './lib/array/order.js';
+import { calculateWordCount } from './lib/text/count.js';
 
 const CATEGORY_LABELS = {
   character: 'Characters',
@@ -102,10 +105,6 @@ function createInlineEditableText(initialValue, options = {}) {
     document.execCommand('insertText', false, text);
   });
   return span;
-}
-
-function createId(prefix) {
-  return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
 }
 
 function createCharacterBackground(source = {}) {
@@ -221,50 +220,6 @@ function normalizeCodexMedia(list) {
     .filter(Boolean);
 }
 
-function nextActId(order) {
-  return `A${order}`;
-}
-
-function nextChapterId(actId, order) {
-  return `${actId}.C${order}`;
-}
-
-function nextSceneId(chapterId, order) {
-  return `${chapterId}.S${order}`;
-}
-
-function nextBeatId(sceneId, order) {
-  return `${sceneId}.B${order}`;
-}
-
-function getNextOrder(items, getOrder) {
-  if (!Array.isArray(items) || items.length === 0) {
-    return 1;
-  }
-  return items.reduce((max, item) => {
-    if (!item) {
-      return max;
-    }
-    const value = getOrder(item);
-    const numeric = typeof value === 'number' && !Number.isNaN(value) ? value : 0;
-    return numeric > max ? numeric : max;
-  }, 0) + 1;
-}
-
-function sortByOrder(list) {
-  return [...list]
-    .map((item, index) => ({ item, index }))
-    .sort((a, b) => {
-      const orderA = typeof a.item?.order === 'number' && !Number.isNaN(a.item.order) ? a.item.order : a.index + 1;
-      const orderB = typeof b.item?.order === 'number' && !Number.isNaN(b.item.order) ? b.item.order : b.index + 1;
-      if (orderA !== orderB) {
-        return orderA - orderB;
-      }
-      return a.index - b.index;
-    })
-    .map((wrapper) => wrapper.item);
-}
-
 function normalizeBeats(sceneId, beats) {
   if (!Array.isArray(beats) || beats.length === 0) {
     return [];
@@ -280,17 +235,6 @@ function normalizeBeats(sceneId, beats) {
         order
       };
     });
-}
-
-function calculateWordCount(text) {
-  if (typeof text !== 'string') {
-    return 0;
-  }
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    return 0;
-  }
-  return trimmed.split(/\s+/).filter(Boolean).length;
 }
 
 function normalizeLastScan(lastScan) {
