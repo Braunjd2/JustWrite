@@ -1706,12 +1706,14 @@ const actions = {
   },
   setSelectionContext(sceneId, start, end, text) {
     const snippet = typeof text === 'string' ? text.trim() : '';
+    let didChange = false;
     updateState((draft) => {
       if (!snippet) {
         if (!draft.ui.selectionContext) {
           return false;
         }
         draft.ui.selectionContext = null;
+        didChange = true;
         return;
       }
       const prev = draft.ui.selectionContext;
@@ -1731,15 +1733,24 @@ const actions = {
         text: snippet,
         rawText: text
       };
-    });
+      didChange = true;
+    }, { skipHistory: true, skipRender: true });
+    if (didChange) {
+      renderAssistant();
+    }
   },
   clearSelectionContext() {
+    let didChange = false;
     updateState((draft) => {
       if (!draft.ui.selectionContext) {
         return false;
       }
       draft.ui.selectionContext = null;
-    });
+      didChange = true;
+    }, { skipHistory: true, skipRender: true });
+    if (didChange) {
+      renderAssistant();
+    }
   },
   toggleActCollapse(actId) {
     if (!actId) {
@@ -6085,7 +6096,8 @@ function createCodexSidebarElement(options = {}) {
     className = 'codex-main-sidebar',
     emptyClassName = 'codex-empty',
     entryButtonClass = 'codex-entry-button',
-    searchTokens = []
+    searchTokens = [],
+    allowSidebarDetail = true
   } = options;
 
   const container = document.createElement(tag);
@@ -6099,9 +6111,10 @@ function createCodexSidebarElement(options = {}) {
   }
 
   const grouped = groupCodexEntries(searchTokens);
-  const sidebarState = state.ui && state.ui.codexSidebar ? state.ui.codexSidebar : { collapsedCategories: [], selectedEntryId: null };
-  const selectedSidebarEntryId = sidebarState.selectedEntryId;
-  if (selectedSidebarEntryId) {
+  const sidebarState =
+    state.ui && state.ui.codexSidebar ? state.ui.codexSidebar : { collapsedCategories: [], selectedEntryId: null };
+  const selectedSidebarEntryId = allowSidebarDetail ? sidebarState.selectedEntryId : null;
+  if (allowSidebarDetail && selectedSidebarEntryId) {
     const entry = state.codex.entries[selectedSidebarEntryId];
     if (entry && codexEntryMatchesTokens(entry, searchTokens)) {
       container.appendChild(createCodexSidebarDetail(entry));
@@ -6157,14 +6170,21 @@ function createCodexSidebarElement(options = {}) {
         const item = document.createElement('li');
         const mentionCount = entry.stats && typeof entry.stats.mentionCount === 'number' ? entry.stats.mentionCount : 0;
         const label = mentionCount > 0 ? `${entry.name} · ${mentionCount}` : entry.name;
+        const isActive =
+          state.codex.selectedId === entry.id ||
+          (allowSidebarDetail && selectedSidebarEntryId === entry.id);
         const button = createElement(
           'button',
-          `${entryButtonClass}${state.codex.selectedId === entry.id || selectedSidebarEntryId === entry.id ? ' is-active' : ''}`,
+          `${entryButtonClass}${isActive ? ' is-active' : ''}`,
           label
         );
         button.addEventListener('click', () => {
           actions.selectCodexEntry(entry.id);
-          actions.openCodexSidebarEntry(entry.id);
+          if (allowSidebarDetail) {
+            actions.openCodexSidebarEntry(entry.id);
+          } else {
+            actions.closeCodexSidebarEntry();
+          }
         });
         item.appendChild(button);
         list.appendChild(item);
@@ -6234,7 +6254,7 @@ function renderCodexView() {
 
   const body = createElement('div', 'codex-main-body');
 
-  const sidebar = createCodexSidebarElement({ searchTokens });
+  const sidebar = createCodexSidebarElement({ searchTokens, allowSidebarDetail: false });
   body.appendChild(sidebar);
 
   const content = createElement('div', 'codex-main-content');
