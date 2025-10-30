@@ -528,7 +528,7 @@ function extractMentionsFromText(text) {
   if (typeof text !== 'string' || text.trim().length === 0) {
     return [];
   }
-  const matches = text.match(/@[a-zA-Z0-9_\-]+/g);
+  const matches = text.match(/@[a-zA-Z0-9_-]+/g);
   if (!matches) {
     return [];
   }
@@ -1053,8 +1053,8 @@ function cloneAppState(value) {
   }
   try {
     return JSON.parse(JSON.stringify(value));
-  } catch (error) {
-    console.warn('Falling back to shallow clone for undo snapshot', error);
+  } catch (_error) {
+    console.warn('Falling back to shallow clone for undo snapshot', _error);
     return { ...value };
   }
 }
@@ -1106,7 +1106,7 @@ function restoreEditorFocusIfNeeded(textarea, sceneId) {
     }
     try {
       textarea.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
-    } catch (error) {
+    } catch (_error) {
       textarea.selectionStart = snapshot.selectionStart;
       textarea.selectionEnd = snapshot.selectionEnd;
     }
@@ -1146,7 +1146,7 @@ function restoreChatInputFocus(input) {
   input.focus();
   try {
     input.setSelectionRange(start, end);
-  } catch (error) {
+  } catch (_error) {
     input.selectionStart = start;
     input.selectionEnd = end;
   }
@@ -1177,8 +1177,8 @@ async function bootstrapState() {
         await saveStateToDb(state);
       }
     }
-  } catch (error) {
-    console.error('Failed to initialise state from IndexedDB.', error);
+  } catch (_error) {
+    console.error('Failed to initialise state from IndexedDB.', _error);
     state = createInitialState();
   }
 
@@ -1203,8 +1203,8 @@ function schedulePersist() {
     persistTimer = null;
     persistChain = persistChain
       .then(() => saveStateToDb(state))
-      .catch((error) => {
-        console.warn('Failed to persist state to IndexedDB', error);
+      .catch((_error) => {
+        console.warn('Failed to persist state to IndexedDB', _error);
       });
   }, PERSIST_DEBOUNCE_MS);
 }
@@ -1908,11 +1908,11 @@ const actions = {
         draft.chat.messages.push(assistantMessage);
         draft.ui.chat.isSending = false;
       });
-    } catch (error) {
-      console.error('Chat completion failed', error);
+    } catch (_error) {
+      console.error('Chat completion failed', _error);
       updateState((draft) => {
         draft.ui.chat.isSending = false;
-        draft.ui.chat.error = error && error.message ? error.message : 'Assistant request failed.';
+        draft.ui.chat.error = _error && _error.message ? _error.message : 'Assistant request failed.';
       });
     }
   },
@@ -1989,13 +1989,13 @@ const actions = {
         draft.ui.generatingBeats = false;
         draft.ui.showBeats = true;
       });
-    } catch (error) {
-      console.error('Beat generation failed', error);
+    } catch (_error) {
+      console.error('Beat generation failed', _error);
       updateState((draft) => {
         draft.ui.generatingBeats = false;
         if (draft.ui.chat) {
           draft.ui.chat.error =
-            error && error.message ? `Beat generation failed: ${error.message}` : 'Beat generation failed.';
+            _error && _error.message ? `Beat generation failed: ${_error.message}` : 'Beat generation failed.';
         }
       }, { skipHistory: true });
     }
@@ -2094,13 +2094,13 @@ const actions = {
         draft.ui.generatingSceneDraft = false;
         draft.ui.showBeats = false;
       });
-    } catch (error) {
-      console.error('Scene draft generation failed', error);
+    } catch (_error) {
+      console.error('Scene draft generation failed', _error);
       updateState((draft) => {
         draft.ui.generatingSceneDraft = false;
         if (draft.ui.chat) {
           draft.ui.chat.error =
-            error && error.message ? `Scene draft failed: ${error.message}` : 'Scene draft failed.';
+            _error && _error.message ? `Scene draft failed: ${_error.message}` : 'Scene draft failed.';
         }
       }, { skipHistory: true });
     }
@@ -2319,9 +2319,9 @@ const actions = {
     try {
       await clearStateFromDb();
       clearLegacyState();
-    } catch (error) {
-      console.warn('Failed to clear persisted database state', error);
-      throw error;
+    } catch (_error) {
+      console.warn('Failed to clear persisted database state', _error);
+      throw _error;
     }
   },
   async clearAllData() {
@@ -2329,8 +2329,8 @@ const actions = {
     cancelScheduledPersist();
     try {
       await clearStateFromDb();
-    } catch (error) {
-      console.warn('Failed to clear persisted database state before reset', error);
+    } catch (_error) {
+      console.warn('Failed to clear persisted database state before reset', _error);
     }
     clearLegacyState();
     state = createInitialState();
@@ -2522,8 +2522,8 @@ const actions = {
       }
       try {
         entry.media.push(createCodexMedia(mediaPayload));
-      } catch (error) {
-        console.warn('Failed to add Codex media', error);
+      } catch (_error) {
+        console.warn('Failed to add Codex media', _error);
         return false;
       }
       refreshCodexDerivedData(draft);
@@ -2856,10 +2856,10 @@ const actions = {
           providerId
         };
       });
-    } catch (error) {
-      console.error('Scene scan failed', error);
+    } catch (_error) {
+      console.error('Scene scan failed', _error);
       updateState((draft) => {
-        let message = error && error.message ? error.message : 'Scene scan failed. Check console for details.';
+        let message = _error && _error.message ? _error.message : 'Scene scan failed. Check console for details.';
         if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('fetch')) {
           message = 'Unable to reach the AI provider. Check your network connection and API key permissions.';
         }
@@ -2941,8 +2941,8 @@ function downloadFile(filename, data, mimeType = 'text/plain') {
     anchor.click();
     document.body.removeChild(anchor);
     globalThis.setTimeout(() => URL.revokeObjectURL(url), 0);
-  } catch (error) {
-    console.warn('Failed to download file', error);
+  } catch (_error) {
+    console.warn('Failed to download file', _error);
     window.alert('Unable to trigger download. Check browser permissions.');
   }
 }
@@ -3020,7 +3020,7 @@ function tryExecCommand(command) {
   }
   try {
     return document.execCommand(command);
-  } catch (error) {
+  } catch (_error) {
     return false;
   }
 }
@@ -3034,7 +3034,7 @@ function focusEditable(target) {
   }
   try {
     target.focus({ preventScroll: true });
-  } catch (error) {
+  } catch (_error) {
     target.focus();
   }
 }
@@ -3065,7 +3065,7 @@ function insertTextAtCursor(target, text) {
   if (target.isContentEditable) {
     try {
       return document.execCommand('insertText', false, text);
-    } catch (error) {
+    } catch (_error) {
       return false;
     }
   }
@@ -3794,7 +3794,7 @@ function renderSettings() {
     try {
       await actions.clearDatabase();
       window.alert('Saved database cleared. Reload the app to start from a fresh state.');
-    } catch (error) {
+    } catch (_error) {
       window.alert('Unable to clear the database. Check the console for details.');
     } finally {
       clearDbButton.disabled = false;
@@ -4875,12 +4875,12 @@ function extractJsonPayload(raw) {
   }
   try {
     return JSON.parse(content);
-  } catch (error) {
+  } catch (_error) {
     const match = content.match(/\{[\s\S]*\}/);
     if (match) {
       return JSON.parse(match[0]);
     }
-    throw error;
+    throw _error;
   }
 }
 

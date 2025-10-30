@@ -39,7 +39,7 @@ async function resolveFilePath(url) {
       return join(absolutePath, 'index.html');
     }
     return absolutePath;
-  } catch (error) {
+  } catch (_error) {
     return null;
   }
 }
@@ -52,7 +52,7 @@ function isProxyAllowed(endpoint) {
     }
     const origin = `${parsed.protocol}//${parsed.host}`;
     return PROXY_ALLOWLIST.has(origin);
-  } catch (error) {
+  } catch (_error) {
     return false;
   }
 }
@@ -87,7 +87,7 @@ async function handleProxyRequest(request, response) {
     try {
       const rawBody = Buffer.concat(chunks).toString('utf-8') || '{}';
       payload = JSON.parse(rawBody);
-    } catch (error) {
+    } catch (_error) {
       response.writeHead(400, {
         'Access-Control-Allow-Origin': '*',
         'Content-Type': 'application/json; charset=utf-8'
@@ -122,8 +122,8 @@ async function handleProxyRequest(request, response) {
         'Access-Control-Allow-Origin': '*'
       });
       response.end(buffer);
-    } catch (error) {
-      console.error('[proxy] request failed', error);
+    } catch (_error) {
+      console.error('[proxy] request failed', _error);
       response.writeHead(502, {
         'Access-Control-Allow-Origin': '*',
         'Content-Type': 'application/json; charset=utf-8'
@@ -167,8 +167,8 @@ const server = createServer(async (request, response) => {
     } else {
       response.end();
     }
-  } catch (error) {
-    console.error('Error serving', filePath, error);
+  } catch (_error) {
+    console.error('Error serving', filePath, _error);
     response.writeHead(500).end('Internal Server Error');
   }
 });

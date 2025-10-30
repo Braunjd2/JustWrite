@@ -102,7 +102,7 @@ async function performProviderRequest(requestConfig, expectJson) {
   if (expectJson || contentType.includes('application/json')) {
     try {
       return rawText ? JSON.parse(rawText) : {};
-    } catch (error) {
+    } catch (_error) {
       throw new Error('Failed to parse AI response JSON');
     }
   }
