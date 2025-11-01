@@ -373,6 +373,24 @@ function prepareCodexEntriesForSceneScan(appState, sceneId) {
   return Object.values(tempState.codex.entries || {});
 }
 
+function sceneNeedsRescan(scene) {
+  if (!scene) {
+    return false;
+  }
+  if (!scene.lastScan || !scene.lastScan.timestamp) {
+    return true;
+  }
+  const lastUpdatedMs = scene.lastUpdated ? new Date(scene.lastUpdated).getTime() : 0;
+  const scannedMs = new Date(scene.lastScan.timestamp).getTime();
+  if (!Number.isFinite(scannedMs)) {
+    return true;
+  }
+  if (!Number.isFinite(lastUpdatedMs)) {
+    return false;
+  }
+  return lastUpdatedMs > scannedMs;
+}
+
 function createInitialState() {
   const actId = 'A1';
   const chapterId = 'A1.C1';
@@ -4037,6 +4055,13 @@ function renderWorkspace() {
   shell.appendChild(header);
 
   const body = createElement('div', 'workspace-body');
+  const needsRescan = sceneNeedsRescan(selectedScene);
+  if (needsRescan) {
+    const alertText = selectedScene.lastScan && selectedScene.lastScan.timestamp
+      ? 'Scene updated since last scan. Run “Scan scene” to refresh Codex.'
+      : 'Scene has not been scanned yet. Run “Scan scene” to populate Codex.';
+    body.appendChild(createElement('div', 'workspace-alert', alertText));
+  }
   let editorTextarea = null;
   let refreshSceneIndicators = () => {
     const latestScene = state.scenes[selectedScene.id];

@@ -1010,6 +1010,17 @@ button {
   min-height: 0;
 }
 
+.workspace-alert {
+  border-radius: 0.65rem;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.15);
+  color: #fecaca;
+  padding: 0.85rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
 .workspace-beats-view {
   flex: 1;
   display: flex;
