@@ -25,7 +25,8 @@ import {
   applyCodexUpdates,
   updateAllCodexRelations,
   refreshCodexDerivedData,
-  normalizeMentionKey
+  normalizeMentionKey,
+  removeSceneContributions
 } from './features/codex/state/updates.js';
 import { getOrderedSceneIds } from './features/scenes/utils/order.js';
 import {
@@ -345,6 +346,33 @@ function createSceneContext(scene) {
   };
 }
 
+function cloneValue(value) {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_error) {
+    return null;
+  }
+}
+
+function prepareCodexEntriesForSceneScan(appState, sceneId) {
+  if (!appState || !sceneId || !appState.codex || !appState.codex.entries) {
+    return Object.values(appState?.codex?.entries || {});
+  }
+  const clonedEntries = cloneValue(appState.codex.entries);
+  if (!clonedEntries) {
+    return Object.values(appState.codex.entries);
+  }
+  const tempState = {
+    codex: { entries: clonedEntries },
+    scenes: appState.scenes
+  };
+  removeSceneContributions(tempState, sceneId);
+  return Object.values(tempState.codex.entries || {});
+}
+
 function createInitialState() {
   const actId = 'A1';
   const chapterId = 'A1.C1';
@@ -389,8 +417,7 @@ function createInitialState() {
           id: codexCharacterId,
           name: 'Avery Sol',
           category: 'character',
-          summary: 'Protagonist and reluctant hero.',
-          details: [],
+          details: [createCodexDetail('Protagonist and reluctant hero.')],
           media: [],
           background: createCharacterBackground(),
           core: createCharacterCoreSections({
@@ -401,8 +428,10 @@ function createInitialState() {
           id: codexPlaceId,
           name: 'Harbor District',
           category: 'place',
-          summary: 'Rain-soaked sprawl where the story begins.',
-          details: [createCodexDetail('Establishes the noir atmosphere of the city.', sceneId)],
+          details: [
+            createCodexDetail('Rain-soaked sprawl where the story begins.'),
+            createCodexDetail('Establishes the noir atmosphere of the city.', sceneId)
+          ],
           media: []
         }
       },
@@ -635,11 +664,15 @@ function normalizeState(value) {
         };
       });
 
+      const summaryText = typeof entry.summary === 'string' ? entry.summary.trim() : '';
+      if (summaryText) {
+        details.unshift(createCodexDetail(summaryText));
+      }
+
       const normalizedEntry = {
         id,
         name: entry.name || 'Entry',
         category,
-        summary: entry.summary || '',
         details,
         media: normalizeCodexMedia(entry.media)
       };
@@ -2008,19 +2041,6 @@ const actions = {
       draft.codex.selectedId = entryId;
     });
   },
-  updateCodexSummary(entryId, summary) {
-    updateState((draft) => {
-      const entry = draft.codex.entries[entryId];
-      if (!entry) {
-        return false;
-      }
-      if (entry.summary === summary) {
-        return false;
-      }
-      entry.summary = summary;
-      refreshCodexDerivedData(draft);
-    });
-  },
   toggleSettings() {
     updateState((draft) => {
       draft.ui.showSettings = !draft.ui.showSettings;
@@ -2123,7 +2143,6 @@ const actions = {
         id,
         name: normalizedName,
         category: normalizedCategory,
-        summary: '',
         details: [],
         media: []
       };
@@ -2551,7 +2570,7 @@ const actions = {
 
     const scenePayload = typeof structuredClone === 'function' ? structuredClone(scene) : JSON.parse(JSON.stringify(scene));
     const beats = Array.isArray(scenePayload.beats) ? [...scenePayload.beats] : [];
-    const codexEntries = Object.values(state.codex.entries || {});
+    const codexEntries = prepareCodexEntriesForSceneScan(state, sceneId);
     const outline = buildOutlineSummary(state);
     const orderedSceneIds = getOrderedSceneIds(state);
     const currentIndex = orderedSceneIds.indexOf(sceneId);
@@ -2600,6 +2619,7 @@ const actions = {
         if (!draftScene) {
           return false;
         }
+        removeSceneContributions(draft, sceneId);
         stats = applyCodexUpdates(draft, sceneId, updates);
         draftScene.beats = normalizeBeats(
           sceneId,
@@ -4323,6 +4343,12 @@ function renderSceneScanStatus(scene) {
   const providerLabel = provider ? provider.label : providerId;
   const completedAt = activeStatus.completedAt ? new Date(activeStatus.completedAt).toLocaleString() : 'just now';
   content.appendChild(createElement('p', 'scan-status-detail', `Last scan completed ${completedAt}.`));
+  const refreshedLabel = activeStatus.completedAt
+    ? new Date(activeStatus.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : 'just now';
+  content.appendChild(
+    createElement('p', 'scan-status-detail', `Scene data refreshed ${activeStatus.completedAt ? `at ${refreshedLabel}` : refreshedLabel}.`)
+  );
   content.appendChild(createElement('p', 'scan-status-detail', `Provider: ${providerLabel}.`));
   if (activeStatus.message) {
     content.appendChild(createElement('p', 'scan-status-detail', activeStatus.message));
@@ -4536,12 +4562,34 @@ function buildCodexSummary(appState, limit = 12) {
   if (entries.length === 0) {
     return '';
   }
+
+  const describeEntry = (entry) => {
+    if (!entry) {
+      return 'No codex notes yet.';
+    }
+    if (Array.isArray(entry.details)) {
+      const text = entry.details.find((detail) => detail && typeof detail.text === 'string' && detail.text.trim().length > 0);
+      if (text && typeof text.text === 'string') {
+        return text.text;
+      }
+    }
+    if (entry.category === 'character' && entry.background && typeof entry.background === 'object') {
+      const firstBackground = CHARACTER_BACKGROUND_FIELDS.find(
+        (field) => typeof entry.background[field] === 'string' && entry.background[field].trim().length > 0
+      );
+      if (firstBackground) {
+        return `${CHARACTER_BACKGROUND_LABELS[firstBackground]}: ${entry.background[firstBackground]}`;
+      }
+    }
+    return 'No codex notes yet.';
+  };
+
   const sorted = entries
     .filter((entry) => entry && entry.name)
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, limit);
   return sorted
-    .map((entry) => `- ${entry.name} (${entry.category || 'lore'}): ${entry.summary || 'No summary available.'}`)
+    .map((entry) => `- ${entry.name} (${entry.category || 'lore'}): ${describeEntry(entry)}`)
     .join('\n');
 }
 
@@ -4601,18 +4649,6 @@ function createCodexEntryContent(entry, options = {}) {
   });
   categoryRow.appendChild(categorySelect);
   entryWrapper.appendChild(categoryRow);
-
-  const summarySection = createElement('section', 'codex-summary-section');
-  summarySection.appendChild(createElement('label', 'codex-summary-label', 'Summary'));
-  const summaryArea = document.createElement('textarea');
-  summaryArea.className = 'codex-summary-textarea';
-  summaryArea.placeholder = 'Write a short description that captures the essence of this entry.';
-  summaryArea.value = entry.summary || '';
-  summaryArea.addEventListener('blur', (event) => {
-    actions.updateCodexSummary(entry.id, event.target.value);
-  });
-  summarySection.appendChild(summaryArea);
-  entryWrapper.appendChild(summarySection);
 
   entryWrapper.appendChild(renderCodexMediaSection(entry));
   entryWrapper.appendChild(renderCodexRelations(entry));
@@ -5586,10 +5622,12 @@ function renderCodexMediaSection(entry) {
     item.appendChild(image);
     const caption = createElement('figcaption', 'codex-media-caption', media.name || 'Image');
     item.appendChild(caption);
-    const removeButton = createElement('button', 'codex-media-remove', '\u00D7');
-    removeButton.title = 'Remove image';
+    const actionsRow = createElement('div', 'codex-media-actions');
+    const removeButton = createElement('button', 'codex-media-delete', 'Remove');
+    removeButton.type = 'button';
     removeButton.addEventListener('click', () => actions.removeCodexMedia(entry.id, media.id));
-    item.appendChild(removeButton);
+    actionsRow.appendChild(removeButton);
+    item.appendChild(actionsRow);
     grid.appendChild(item);
   });
   section.appendChild(grid);

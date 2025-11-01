@@ -12,6 +12,11 @@ import {
 } from '../utils/normalizers.js';
 import { extractMentionsFromText } from '../../../lib/text/mentions.js';
 
+const BACKGROUND_LABEL_TO_FIELD = Object.entries(CHARACTER_BACKGROUND_LABELS).reduce((map, [field, label]) => {
+  map[label] = field;
+  return map;
+}, {});
+
 export function normalizeCodexCategory(value) {
   const normalized = typeof value === 'string' ? value.toLowerCase().trim() : '';
   if (normalized === 'character' || normalized === 'place' || normalized === 'item' || normalized === 'lore') {
@@ -382,6 +387,122 @@ export function applyCoreUpdatesToEntry(entry, updates, draftState, fallbackScen
   return mutated;
 }
 
+function resolveSceneIdForBeat(draftState, beatId) {
+  if (!draftState || !draftState.scenes || !beatId) {
+    return null;
+  }
+  for (const [sceneKey, scene] of Object.entries(draftState.scenes)) {
+    if (!scene || !Array.isArray(scene.beats)) {
+      continue;
+    }
+    const matches = scene.beats.some((beat) => beat && beat.id === beatId);
+    if (matches) {
+      return scene.id || sceneKey;
+    }
+  }
+  return null;
+}
+
+function beatBelongsToScene(draftState, beatId, sceneId) {
+  if (!beatId || !sceneId) {
+    return false;
+  }
+  const ownerSceneId = resolveSceneIdForBeat(draftState, beatId);
+  return ownerSceneId === sceneId;
+}
+
+function detailMatchesScene(detail, draftState, sceneId) {
+  if (!detail || !sceneId) {
+    return false;
+  }
+  if (detail.sourceSceneId === sceneId) {
+    return true;
+  }
+  if (detail.sourceBeatId) {
+    return beatBelongsToScene(draftState, detail.sourceBeatId, sceneId);
+  }
+  return false;
+}
+
+export function removeSceneContributions(draftState, sceneId) {
+  if (!draftState || !sceneId || !draftState.codex || !draftState.codex.entries) {
+    return;
+  }
+
+  let mutated = false;
+  Object.values(draftState.codex.entries).forEach((entry) => {
+    if (!entry) {
+      return;
+    }
+
+    let removedDetails = [];
+    if (Array.isArray(entry.details) && entry.details.length > 0) {
+      const kept = [];
+      entry.details.forEach((detail) => {
+        if (detailMatchesScene(detail, draftState, sceneId)) {
+          removedDetails.push(detail);
+          return;
+        }
+        kept.push(detail);
+      });
+      if (kept.length !== entry.details.length) {
+        entry.details = kept;
+        mutated = true;
+      }
+    }
+
+    if (entry.category === 'character' && entry.core && typeof entry.core === 'object') {
+      CHARACTER_CORE_SECTION_KEYS.forEach((section) => {
+        const list = Array.isArray(entry.core[section]) ? entry.core[section] : [];
+        if (list.length === 0) {
+          return;
+        }
+        const filtered = list.filter(
+          (item) =>
+            item &&
+            item.sourceSceneId !== sceneId &&
+            !beatBelongsToScene(draftState, item.sourceBeatId, sceneId)
+        );
+        if (filtered.length !== list.length) {
+          entry.core[section] = filtered;
+          mutated = true;
+        }
+      });
+
+      if (removedDetails.length > 0 && entry.background && typeof entry.background === 'object') {
+        removedDetails.forEach((detail) => {
+          if (!detail || typeof detail.text !== 'string') {
+            return;
+          }
+          const prefix = 'Background · ';
+          if (!detail.text.startsWith(prefix)) {
+            return;
+          }
+          const remainder = detail.text.slice(prefix.length);
+          const separatorIndex = remainder.indexOf(':');
+          if (separatorIndex === -1) {
+            return;
+          }
+          const label = remainder.slice(0, separatorIndex).trim();
+          const value = remainder.slice(separatorIndex + 1).trim();
+          const field = BACKGROUND_LABEL_TO_FIELD[label];
+          if (!field) {
+            return;
+          }
+          if (typeof entry.background[field] === 'string' && entry.background[field].trim() === value) {
+            entry.background[field] = '';
+            mutated = true;
+          }
+        });
+      }
+    }
+  });
+
+  if (mutated) {
+    refreshCodexDerivedData(draftState);
+  }
+}
+
 export function applyCodexUpdates(draft, sceneId, updates) {
   const result = { created: 0, updated: 0 };
   if (!Array.isArray(updates) || updates.length === 0) {
@@ -404,8 +525,17 @@ export function applyCodexUpdates(draft, sceneId, updates) {
     }
 
     const category = normalizeCodexCategory(update.category);
-    const summary = typeof update.summary === 'string' ? update.summary.trim() : '';
+    const summaryText = typeof update.summary === 'string' ? update.summary.trim() : '';
     const detailItems = normalizeDetailItems(Array.isArray(update.details) ? update.details : [], sceneId);
+    if (summaryText.length > 0) {
+      detailItems.unshift({
+        text: summaryText,
+        sceneId,
+        beatId: null,
+        beatTitle: null,
+        beatNumber: null
+      });
+    }
     const backgroundUpdates =
       category === 'character' ? normalizeBackgroundUpdates(update.background || {}, sceneId) : [];
     const coreUpdates = category === 'character' ? normalizeCoreUpdates(update.core || {}, sceneId) : [];
@@ -414,11 +544,6 @@ export function applyCodexUpdates(draft, sceneId, updates) {
     if (existingId) {
       const entry = draft.codex.entries[existingId];
       let entryMutated = false;
-
-      if (summary.length > 0 && entry.summary !== summary) {
-        entry.summary = summary;
-        entryMutated = true;
-      }
 
       if (entry.category !== category && category) {
         entry.category = category;
@@ -466,7 +591,6 @@ export function applyCodexUpdates(draft, sceneId, updates) {
         id,
         name,
         category,
-        summary: summary || '',
         details: []
       };
       detailItems.forEach((detail) => {
@@ -554,8 +678,6 @@ export function computeEntryDerivedData(entry, mentionMap) {
   };
 
   let mentionCount = 0;
-
-  mentionCount += collect(entry.summary || '', { kind: 'summary' });
 
   if (Array.isArray(entry.details)) {
     entry.details.forEach((detail) => {

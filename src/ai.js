@@ -1,3 +1,5 @@
+import { CHARACTER_BACKGROUND_FIELDS, CHARACTER_BACKGROUND_LABELS } from './constants.js';
+
 const PROVIDER_MAP = {
   'openai:gpt-5': { vendor: 'openai', model: 'gpt-4.1' },
   'openai:gpt-4.1': { vendor: 'openai', model: 'gpt-4.1' },
@@ -217,11 +219,32 @@ function buildScanPrompt({
   if (codexEntries && codexEntries.length > 0) {
     sections.push('Existing codex entries (summarised):');
     codexEntries.slice(0, 50).forEach((entry) => {
+      const describeEntry = () => {
+        if (!entry) {
+          return 'No codex notes yet.';
+        }
+        if (Array.isArray(entry.details)) {
+          const detail = entry.details.find((item) => item && typeof item.text === 'string' && item.text.trim().length > 0);
+          if (detail) {
+            return detail.text;
+          }
+        }
+        if (entry.category === 'character' && entry.background && typeof entry.background === 'object') {
+          const firstKey = CHARACTER_BACKGROUND_FIELDS.find(
+            (field) => typeof entry.background[field] === 'string' && entry.background[field].trim().length > 0
+          );
+          if (firstKey) {
+            const label = CHARACTER_BACKGROUND_LABELS[firstKey] || firstKey;
+            return `${label}: ${entry.background[firstKey]}`;
+          }
+        }
+        return 'No codex notes yet.';
+      };
       const detailsPreview = Array.isArray(entry.details)
         ? entry.details.slice(0, 2).map((detail) => detail.text || '').filter(Boolean)
         : [];
       sections.push(
-        `- ${entry.name} (${entry.category}): ${entry.summary || 'No summary'}${
+        `- ${entry.name} (${entry.category}): ${describeEntry()}${
           detailsPreview.length > 0 ? ` | Notable details: ${detailsPreview.join(' / ')}` : ''
         }`
       );

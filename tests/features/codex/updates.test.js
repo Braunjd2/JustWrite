@@ -4,7 +4,8 @@ import {
   normalizeBackgroundUpdates,
   normalizeCoreUpdates,
   applyCodexUpdates,
-  updateAllCodexRelations
+  updateAllCodexRelations,
+  removeSceneContributions
 } from '../../../src/features/codex/state/updates.js';
 import {
   createCharacterBackground,
@@ -62,7 +63,7 @@ describe('codex updates', () => {
     expect(result.created).toBe(1);
     const entry = Object.values(draft.codex.entries).find((item) => item.name === 'Avery');
     expect(entry).toBeTruthy();
-    expect(entry.details.length).toBeGreaterThanOrEqual(1);
+    expect(entry.details.map((detail) => detail.text)).toContain('Hero');
   });
 
   it('updates existing entries without duplication', () => {
@@ -72,7 +73,6 @@ describe('codex updates', () => {
       id: entryId,
       name: 'Avery',
       category: 'character',
-      summary: '',
       details: [],
       background: createCharacterBackground(),
       core: createCharacterCoreSections()
@@ -86,18 +86,138 @@ describe('codex updates', () => {
       }
     ]);
     expect(result.updated).toBe(1);
-    expect(draft.codex.entries[entryId].summary).toBe('Updated hero');
-    expect(draft.codex.entries[entryId].details).toHaveLength(1);
+    const updatedEntry = draft.codex.entries[entryId];
+    expect(updatedEntry.details.map((detail) => detail.text)).toContain('Updated hero');
   });
 
   it('builds relations when codex entries mention others', () => {
     const draft = baseDraft();
     draft.codex.entries = {
-      A: { id: 'A', name: 'Alpha', category: 'lore', summary: '@Beta is here', details: [] },
-      B: { id: 'B', name: 'Beta', category: 'lore', summary: '', details: [] }
+      A: { id: 'A', name: 'Alpha', category: 'lore', details: [{ text: '@Beta is here' }] },
+      B: { id: 'B', name: 'Beta', category: 'lore', details: [] }
     };
     updateAllCodexRelations(draft.codex.entries);
     expect(draft.codex.entries.A.relations).toHaveLength(1);
-    expect(draft.codex.entries.B.relatedBy).toEqual([{ sourceId: 'A', sources: [{ kind: 'summary' }] }]);
+    expect(draft.codex.entries.B.relatedBy).toEqual([
+      { sourceId: 'A', sources: [{ kind: 'detail', detailId: null, sceneId: null, beatId: null }] }
+    ]);
+  });
+
+  it('removes scene contributions while preserving manual notes', () => {
+    const draft = {
+      acts: [],
+      chapters: {},
+      scenes: {
+        'A1.C1.S1': {
+          id: 'A1.C1.S1',
+          beats: [{ id: 'A1.C1.S1.B1', order: 1, title: 'Beat 1', summary: '' }]
+        }
+      },
+      codex: {
+        entries: {
+          hero: {
+            id: 'hero',
+            name: 'Hero',
+            category: 'character',
+            details: [
+              { id: 'd1', text: 'AI detail', sourceSceneId: 'A1.C1.S1', sourceBeatId: null },
+              { id: 'd2', text: 'Manual note', sourceSceneId: null, sourceBeatId: null }
+            ],
+            core: {
+              appearance: [
+                {
+                  id: 'c1',
+                  text: 'Looks tired',
+                  sourceSceneId: 'A1.C1.S1',
+                  sourceBeatId: 'A1.C1.S1.B1',
+                  createdAt: new Date().toISOString()
+                }
+              ],
+              personality: []
+            }
+          }
+        }
+      }
+    };
+
+    removeSceneContributions(draft, 'A1.C1.S1');
+
+    const entry = draft.codex.entries.hero;
+    expect(entry.details).toEqual([{ id: 'd2', text: 'Manual note', sourceSceneId: null, sourceBeatId: null }]);
+    expect(entry.core.appearance).toEqual([]);
+  });
+
+  it('removes details attached via beat id when scene changed', () => {
+    const draft = {
+      acts: [],
+      chapters: {},
+      scenes: {
+        'A1.C1.S1': {
+          id: 'A1.C1.S1',
+          beats: [{ id: 'A1.C1.S1.B1', order: 1, title: 'Beat 1', summary: '' }]
+        }
+      },
+      codex: {
+        entries: {
+          item: {
+            id: 'item',
+            name: 'Artifact',
+            category: 'item',
+            details: [
+              { id: 'd1', text: 'Beat only', sourceSceneId: null, sourceBeatId: 'A1.C1.S1.B1' }
+            ]
+          }
+        }
+      }
+    };
+
+    removeSceneContributions(draft, 'A1.C1.S1');
+
+    expect(draft.codex.entries.item.details).toEqual([]);
+  });
+
+  it('clears background values that originated from the scene', () => {
+    const draft = {
+      acts: [],
+      chapters: {},
+      scenes: {
+        'A1.C1.S1': {
+          id: 'A1.C1.S1',
+          beats: []
+        }
+      },
+      codex: {
+        entries: {
+          hero: {
+            id: 'hero',
+            name: 'Hero',
+            category: 'character',
+            background: {
+              age: '12',
+              gender: ''
+            },
+            details: [
+              {
+                id: 'd1',
+                text: 'Background · Age: 12',
+                sourceSceneId: 'A1.C1.S1',
+                sourceBeatId: null
+              }
+            ],
+            core: {
+              appearance: [],
+              personality: []
+            }
+          }
+        }
+      }
+    };
+
+    removeSceneContributions(draft, 'A1.C1.S1');
+
+    const entry = draft.codex.entries.hero;
+    expect(entry.background.age).toBe('');
+    expect(entry.details).toEqual([]);
+    expect('summary' in entry).toBe(false);
   });
 });
